@@ -144,6 +144,7 @@ def test_validate_cli_preloads_inputs_and_opens_server(tmp_path: Path, monkeypat
     called = {}
 
     def fake_serve(app: ReviewApp, *, open_browser: bool) -> None:
+        """Capture the review app and browser option passed by the CLI."""
         called['app'] = app
         called['open_browser'] = open_browser
 

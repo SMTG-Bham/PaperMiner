@@ -477,6 +477,8 @@ def serve(app: ReviewApp, *, open_browser: bool = True) -> None:
     html = PAGE.read_text(encoding='utf-8').replace('__TOKEN__', token)
 
     class Handler(BaseHTTPRequestHandler):
+        """Handle token-authenticated requests for the review UI and API."""
+
         def _authorized(self) -> bool:
             """Require the per-process token for every route."""
             query = parse_qs(urlsplit(self.path).query)
