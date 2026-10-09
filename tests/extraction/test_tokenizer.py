@@ -256,3 +256,27 @@ def test_prompt_token_reserve_counts_prompt_and_adds_buffer(monkeypatch: pytest.
     assert tokenizer.prompt_token_reserve('one two three', model_config=model_config, buffer_tokens=7, minimum=0) == 10
     assert tokenizer.prompt_token_reserve('one', model_config=model_config, buffer_tokens=0, minimum=5) == 5
     assert calls == [('one two three', model_config), ('one', model_config)]
+
+
+def test_request_token_budget_reserves_prompt_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that request budgets reserve prompt tokens."""
+    calls = {}
+    cfg = config()
+    monkeypatch.setattr(tokenizer, 'prompt_token_reserve', lambda prompt, model_config=None, buffer_tokens=500: calls.update({
+        'prompt': prompt,
+        'reserve_model_config': model_config,
+        'buffer_tokens': buffer_tokens,
+    }) or 25)
+    monkeypatch.setattr(tokenizer, 'usable_input_token_limit', lambda model_config=None, reserve_tokens=0: calls.update({
+        'limit_model_config': model_config,
+        'reserve_tokens': reserve_tokens,
+    }) or 75)
+
+    assert tokenizer.request_token_budget('extract prompt', cfg) == 75
+    assert calls == {
+        'prompt': 'extract prompt',
+        'reserve_model_config': cfg,
+        'buffer_tokens': 500,
+        'limit_model_config': cfg,
+        'reserve_tokens': 25,
+    }

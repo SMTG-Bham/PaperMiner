@@ -311,3 +311,23 @@ def prompt_token_reserve(prompt: str,
     """
     prompt_tokens = count_text_tokens(prompt or '', model_config=model_config)
     return max(minimum, prompt_tokens + int(buffer_tokens))
+
+
+def request_token_budget(prompt: str, model_config: _ModelConfigSource | None = None) -> int:
+    """Calculate the content budget after reserving the request's prompt.
+
+    Parameters
+    ----------
+    prompt : str
+        Instructions sharing the model context window with input content.
+    model_config : _ModelConfigSource or None, optional
+        Model configuration used for token counting and input limits.
+
+    Returns
+    -------
+    int
+        Usable content tokens after reserving the prompt and a 500-token
+        buffer, subject to the existing minimum input budget.
+    """
+    reserve_tokens = prompt_token_reserve(prompt, model_config=model_config, buffer_tokens=500)
+    return usable_input_token_limit(model_config, reserve_tokens=reserve_tokens)

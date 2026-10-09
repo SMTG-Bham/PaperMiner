@@ -414,7 +414,7 @@ def test_convert_units_splits_large_value_batches_without_cutting_lines(monkeypa
             return cls()
 
     chunks = []
-    reserve_calls = []
+    budget_calls = []
 
     def fake_query_model(
         messages: list[dict[str, str]],
@@ -425,31 +425,27 @@ def test_convert_units_splits_large_value_batches_without_cutting_lines(monkeypa
         chunks.append(chunk)
         return '\n'.join(f'converted {value}' for value in chunk.splitlines())
 
-    def fake_reserve(
+    def fake_budget(
         prompt: str,
         model_config: FakeConfig | None = None,
-        buffer_tokens: int = 500,
     ) -> int:
-        """Record prompt reservation arguments and return a fixed reserve."""
-        reserve_calls.append({
+        """Record prompt budget arguments and return a fixed content limit."""
+        budget_calls.append({
             'prompt': prompt,
             'model_config': model_config,
-            'buffer_tokens': buffer_tokens,
         })
-        return 500
+        return 200000
 
     monkeypatch.setattr(extract, 'ModelConfig', FakeConfig)
-    monkeypatch.setattr(extract, 'prompt_token_reserve', fake_reserve)
-    monkeypatch.setattr(extract, 'usable_input_token_limit', lambda model_config=None, reserve_tokens=0: 200000)
+    monkeypatch.setattr(extract, 'request_token_budget', fake_budget)
     monkeypatch.setattr(extract, 'token_length', lambda prompt, model_config=None, model=None, provider=None: 600000)
     monkeypatch.setattr(extract, 'query_model', fake_query_model)
 
     output = extract.convert_units(['alpha', 'beta', 'gamma'], 'Conductivity', 'S cm^-1')
 
     assert len(chunks) > 1
-    assert reserve_calls[0]['model_config'].name == 'fake-text-model'
-    assert reserve_calls[0]['buffer_tokens'] == 500
-    assert 'Convert the following values of Conductivity to S cm^-1' in reserve_calls[0]['prompt']
+    assert budget_calls[0]['model_config'].name == 'fake-text-model'
+    assert 'Convert the following values of Conductivity to S cm^-1' in budget_calls[0]['prompt']
     assert ''.join(chunks) == 'alpha\nbeta\ngamma\n'
     assert all(chunk.endswith('\n') for chunk in chunks)
     assert output == ['converted alpha', 'converted beta', 'converted gamma']
