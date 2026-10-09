@@ -10,40 +10,18 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, NoReturn
 
 import pytest
 
 import paperminertoolkit.settings as settings
 
 
-API_ENV_KEYS = [
-    'ELSEVIER_API_KEY',
-    'OPENAI_API_KEY',
-    'ANTHROPIC_API_KEY',
-    'CORE_API_KEY',
-    'UNPAYWALL_EMAIL',
-    'OPENALEX_API_KEY',
-    'CROSSREF_EMAIL',
-    'NCBI_API_KEY',
-    'NCBI_EMAIL',
-]
-
+API_ENV_KEYS = list(settings.SETTING_ENV_VARS.values())
 MODEL_ENV_KEYS = [
-    'PAPERMINERTOOLKIT_MODEL_PROVIDER',
-    'PAPERMINERTOOLKIT_MODEL_NAME',
-    'PAPERMINERTOOLKIT_MODEL_BASE_URL',
-    'PAPERMINERTOOLKIT_MODEL_API_KEY',
-    'PAPERMINERTOOLKIT_MODEL_CAPABILITIES',
-    'PAPERMINERTOOLKIT_MODEL_TEMPERATURE',
-    'PAPERMINERTOOLKIT_MODEL_TOP_P',
-    'PAPERMINERTOOLKIT_VISION_MODEL_PROVIDER',
-    'PAPERMINERTOOLKIT_VISION_MODEL_NAME',
-    'PAPERMINERTOOLKIT_VISION_MODEL_BASE_URL',
-    'PAPERMINERTOOLKIT_VISION_MODEL_API_KEY',
-    'PAPERMINERTOOLKIT_VISION_MODEL_CAPABILITIES',
-    'PAPERMINERTOOLKIT_VISION_MODEL_TEMPERATURE',
-    'PAPERMINERTOOLKIT_VISION_MODEL_TOP_P',
+    f'{prefix}{suffix}'
+    for prefix in settings.MODEL_ENV_PREFIXES.values()
+    for suffix in settings.MODEL_ENV_FIELDS.values()
 ]
 
 
@@ -581,3 +559,103 @@ def test_check_elsevier_api_key_validates_configured_key() -> None:
 
     assert api_key, 'Set elsevier_api_key in ~/.config/.paperminertoolkitrc.json or ELSEVIER_API_KEY before running network tests.'
     assert settings._check_elsevier_api_key(api_key) is True
+
+
+@pytest.mark.parametrize('provider,label', [
+    ('unpaywall', 'Unpaywall'), ('crossref', 'Crossref'), ('ncbi', 'NCBI'),
+])
+@pytest.mark.parametrize('use_existing', [False, True])
+def test_contact_email_updates_preserve_prompt_and_settings_selection(
+    isolated_settings_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    provider: str,
+    label: str,
+    use_existing: bool,
+) -> None:
+    """Trim addresses and preserve truthy-settings reload and empty-map updates."""
+    key = f'{provider}_email'
+    settings._save_settings({key: 'stored@example.org', 'core_api_key': 'retained'})
+    supplied: dict[str, Any] = {key: 'ignored@example.org'} if use_existing else {}
+    prompts: list[str] = []
+
+    def answer(prompt: str) -> str:
+        """Record the exact interactive prompt and return a padded address."""
+        prompts.append(prompt)
+        return '  revised@example.org  '
+
+    monkeypatch.setattr('builtins.input', answer)
+    getattr(settings, f'update_{provider}_email')(supplied)
+
+    assert prompts == [f'Enter {label} email: ']
+    current = 'stored@example.org' if use_existing else 'not set'
+    assert capsys.readouterr().out == f'Current {label} email: {current}\n'
+    persisted = json.loads(isolated_settings_file.read_text())
+    assert persisted[key] == 'revised@example.org'
+    if use_existing:
+        assert supplied == {key: 'ignored@example.org'}
+        assert persisted['core_api_key'] == 'retained'
+    else:
+        assert supplied == persisted == {key: 'revised@example.org'}
+
+
+@pytest.mark.parametrize('provider,label', [
+    ('unpaywall', 'Unpaywall'), ('crossref', 'Crossref'), ('ncbi', 'NCBI'),
+])
+def test_contact_email_rejection_does_not_save(
+    isolated_settings_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    label: str,
+) -> None:
+    """Reject an address without an at-sign without mutating disk or the caller."""
+    settings._save_settings({f'{provider}_email': 'stored@example.org'})
+    before = isolated_settings_file.read_bytes()
+    supplied: dict[str, Any] = {}
+    monkeypatch.setattr('builtins.input', lambda _: ' invalid ')
+
+    with pytest.raises(ValueError, match=rf'^{label} email must be a valid email address\.$'):
+        getattr(settings, f'update_{provider}_email')(supplied)
+
+    assert supplied == {}
+    assert isolated_settings_file.read_bytes() == before
+
+
+def test_empty_environment_values_leave_stored_settings_and_profiles_intact(
+    isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ignore empty environment variables without leaking unsupported file keys."""
+    isolated_settings_file.write_text(json.dumps({
+        'core_min_interval': 2.5,
+        'ncbi_email': 'stored@example.org',
+        'unknown': 'discard',
+        'model_profiles': {
+            'text': {'model': 'text-model', 'temperature': '0.2'},
+            'vision': {'model': 'vision-model', 'temperature': '0.7'},
+        },
+    }))
+    for key in API_ENV_KEYS + MODEL_ENV_KEYS:
+        monkeypatch.setenv(key, '')
+
+    loaded = settings.load_settings()
+
+    assert loaded['core_min_interval'] == 2.5
+    assert loaded['ncbi_email'] == 'stored@example.org'
+    assert 'unknown' not in loaded
+    assert loaded['model_profiles']['text']['model'] == 'text-model'
+    assert loaded['model_profiles']['text']['temperature'] == 0.2
+    assert loaded['model_profiles']['vision']['model'] == 'vision-model'
+    assert loaded['model_profiles']['vision']['temperature'] == 0.7
+
+
+def test_invalid_stored_profile_is_rejected_before_environment_override(
+    isolated_settings_file: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retain validation of stored numeric values even when an override exists."""
+    isolated_settings_file.write_text(json.dumps({
+        'model_profiles': {'text': {'temperature': 'invalid'}},
+    }))
+    monkeypatch.setenv('PAPERMINERTOOLKIT_MODEL_TEMPERATURE', '0.5')
+
+    with pytest.raises(ValueError, match='invalid'):
+        settings.load_settings()

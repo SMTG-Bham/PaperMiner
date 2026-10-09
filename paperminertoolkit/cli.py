@@ -12,6 +12,7 @@ import json
 import sqlite3
 import sys
 from contextlib import nullcontext, redirect_stdout
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -573,37 +574,77 @@ def filter_reset(db_path: str, name: str | None, all_filters: bool) -> None:
     _echo_filter_overview(db_path, overview)
 
 
+# Reuse option definitions while retaining each command's ordering and help.
+# Click decorators construct a separate Option object for each callback.
+_topic_field_option = click.option(
+    '--field', 'text_fields', multiple=True,
+    type=click.Choice(['title', 'abstract', 'text']),
+    default=('title', 'abstract'), show_default=True,
+    help='Corpus text field to model. Repeat to combine fields.',
+)
+_topic_min_df_option = partial(
+    click.option, '--min-df', default=2, type=click.IntRange(min=1), show_default=True,
+)
+_topic_max_df_option = partial(
+    click.option, '--max-df', default=0.95,
+    type=click.FloatRange(min=0.0, max=1.0, min_open=True), show_default=True,
+)
+_topic_max_features_option = click.option(
+    '--max-features', default=20000, type=click.IntRange(min=2), show_default=True,
+)
+_topic_learning_method_option = click.option(
+    '--learning-method', type=click.Choice(['online', 'batch']), default='online', show_default=True,
+)
+_topic_iterations_option = click.option(
+    '--iterations', 'max_iter', default=20, type=click.IntRange(min=1), show_default=True,
+)
+_topic_top_terms_option = click.option(
+    '--top-terms', default=15, type=click.IntRange(min=1), show_default=True,
+)
+_topic_representative_papers_option = click.option(
+    '--representative-papers', default=5, type=click.IntRange(min=1), show_default=True,
+)
+_topic_stopwords_file_option = click.option(
+    '--stopwords-file', default=None, type=click.Path(exists=True, dir_okay=False),
+    help='UTF-8 file containing one corpus-specific stopword per line.',
+)
+_topic_ngram_max_option = partial(
+    click.option, '--ngram-max', default=2, type=click.IntRange(min=1, max=2), show_default=True,
+)
+_topic_batch_size_option = click.option(
+    '--batch-size', default=128, type=click.IntRange(min=1), show_default=True,
+)
+_topic_cache_dir_option = click.option(
+    '--cache-dir', default=None, type=click.Path(file_okay=False),
+    help='Parent directory for temporary streaming caches.',
+)
+_topic_evaluation_sample_size_option = click.option(
+    '--evaluation-sample-size', default=10000, type=click.IntRange(min=1), show_default=True,
+)
+
+
 @click.command('train')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.argument('model_dir', default='topic_model', type=click.Path())
 @click.option('--topics', 'num_topics', default=10, type=click.IntRange(min=2), show_default=True)
-@click.option('--field', 'text_fields', multiple=True,
-              type=click.Choice(['title', 'abstract', 'text']),
-              default=('title', 'abstract'), show_default=True,
-              help='Corpus text field to model. Repeat to combine fields.')
-@click.option('--min-df', default=2, type=click.IntRange(min=1), show_default=True,
-              help='Minimum number of documents containing a retained term.')
-@click.option('--max-df', default=0.95, type=click.FloatRange(min=0.0, max=1.0, min_open=True),
-              show_default=True, help='Maximum fraction of documents containing a retained term.')
-@click.option('--max-features', default=20000, type=click.IntRange(min=2), show_default=True)
-@click.option('--learning-method', type=click.Choice(['online', 'batch']), default='online', show_default=True)
-@click.option('--iterations', 'max_iter', default=20, type=click.IntRange(min=1), show_default=True)
+@_topic_field_option
+@_topic_min_df_option(help='Minimum number of documents containing a retained term.')
+@_topic_max_df_option(help='Maximum fraction of documents containing a retained term.')
+@_topic_max_features_option
+@_topic_learning_method_option
+@_topic_iterations_option
 @click.option('--random-seed', 'random_state', default=0, type=int, show_default=True)
-@click.option('--top-terms', default=15, type=click.IntRange(min=1), show_default=True)
-@click.option('--representative-papers', default=5, type=click.IntRange(min=1), show_default=True)
-@click.option('--stopwords-file', default=None, type=click.Path(exists=True, dir_okay=False),
-              help='UTF-8 file containing one corpus-specific stopword per line.')
-@click.option('--ngram-max', default=2, type=click.IntRange(min=1, max=2), show_default=True,
-              help='Largest generated n-gram; use 2 to include bigrams.')
+@_topic_top_terms_option
+@_topic_representative_papers_option
+@_topic_stopwords_file_option
+@_topic_ngram_max_option(help='Largest generated n-gram; use 2 to include bigrams.')
 @click.option('--overwrite', is_flag=True, default=False,
               help='Replace known model artifact files in a non-empty model directory.')
 @click.option('--streaming/--in-memory', default=True, show_default=True,
               help='Use disk-backed bounded batches or materialize the corpus in memory.')
-@click.option('--batch-size', default=128, type=click.IntRange(min=1), show_default=True)
-@click.option('--cache-dir', default=None, type=click.Path(file_okay=False),
-              help='Parent directory for temporary streaming caches.')
-@click.option('--evaluation-sample-size', default=10000,
-              type=click.IntRange(min=1), show_default=True)
+@_topic_batch_size_option
+@_topic_cache_dir_option
+@_topic_evaluation_sample_size_option
 def topics_train(db_path: str,
                  model_dir: str,
                  num_topics: int,
@@ -667,30 +708,23 @@ def topics_train(db_path: str,
               help='Topic count to train. Repeat to compare several values.')
 @click.option('--seed', 'random_states', multiple=True, type=int, default=(0, 1), show_default=True,
               help='Random seed to train. Repeat to assess stability.')
-@click.option('--field', 'text_fields', multiple=True,
-              type=click.Choice(['title', 'abstract', 'text']),
-              default=('title', 'abstract'), show_default=True,
-              help='Corpus text field to model. Repeat to combine fields.')
-@click.option('--min-df', default=2, type=click.IntRange(min=1), show_default=True)
-@click.option('--max-df', default=0.95, type=click.FloatRange(min=0.0, max=1.0, min_open=True),
-              show_default=True)
-@click.option('--max-features', default=20000, type=click.IntRange(min=2), show_default=True)
-@click.option('--learning-method', type=click.Choice(['online', 'batch']), default='online', show_default=True)
-@click.option('--iterations', 'max_iter', default=20, type=click.IntRange(min=1), show_default=True)
-@click.option('--top-terms', default=15, type=click.IntRange(min=1), show_default=True)
-@click.option('--representative-papers', default=5, type=click.IntRange(min=1), show_default=True)
-@click.option('--stopwords-file', default=None, type=click.Path(exists=True, dir_okay=False),
-              help='UTF-8 file containing one corpus-specific stopword per line.')
-@click.option('--ngram-max', default=2, type=click.IntRange(min=1, max=2), show_default=True)
+@_topic_field_option
+@_topic_min_df_option()
+@_topic_max_df_option()
+@_topic_max_features_option
+@_topic_learning_method_option
+@_topic_iterations_option
+@_topic_top_terms_option
+@_topic_representative_papers_option
+@_topic_stopwords_file_option
+@_topic_ngram_max_option()
 @click.option('--overwrite', is_flag=True, default=False,
               help='Replace known comparison and model artifact files.')
 @click.option('--streaming/--in-memory', default=True, show_default=True,
               help='Use one reusable disk-backed corpus cache or in-memory matrices.')
-@click.option('--batch-size', default=128, type=click.IntRange(min=1), show_default=True)
-@click.option('--cache-dir', default=None, type=click.Path(file_okay=False),
-              help='Parent directory for temporary streaming caches.')
-@click.option('--evaluation-sample-size', default=10000,
-              type=click.IntRange(min=1), show_default=True)
+@_topic_batch_size_option
+@_topic_cache_dir_option
+@_topic_evaluation_sample_size_option
 def topics_compare(db_path: str,
                    output_dir: str,
                    topic_counts: tuple[int, ...],
