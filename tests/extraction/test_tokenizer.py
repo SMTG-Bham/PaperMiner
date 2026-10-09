@@ -91,8 +91,21 @@ def test_openai_token_count_selects_model_encoding_and_falls_back(monkeypatch: p
     assert fallback_calls['name'] == 'o200k_base'
 
 
-def test_anthropic_token_count_uses_count_tokens_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Call Anthropic's Messages token-counting endpoint."""
+@pytest.mark.parametrize(('base_url', 'expected_url'), [
+    (None, 'https://api.anthropic.com/v1/messages/count_tokens'),
+    ('', 'https://api.anthropic.com/v1/messages/count_tokens'),
+    ('https://anthropic.local', 'https://anthropic.local/v1/messages/count_tokens'),
+    ('https://anthropic.local/', 'https://anthropic.local/v1/messages/count_tokens'),
+    ('https://anthropic.local/v1', 'https://anthropic.local/v1/messages/count_tokens'),
+    ('https://anthropic.local/v1/', 'https://anthropic.local/v1/messages/count_tokens'),
+    ('https://anthropic.local/proxy/v1/', 'https://anthropic.local/proxy/v1/messages/count_tokens'),
+])
+def test_anthropic_token_count_uses_count_tokens_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    base_url: str | None,
+    expected_url: str,
+) -> None:
+    """Use the Messages base convention without duplicating its API version."""
     calls = {}
 
     class FakeResponse:
@@ -123,11 +136,11 @@ def test_anthropic_token_count_uses_count_tokens_endpoint(monkeypatch: pytest.Mo
 
     count = tokenizer._anthropic_token_count(
         'paper text',
-        config(provider='anthropic', name='claude-test', api_key='anthropic-key', base_url='https://anthropic.local'),
+        config(provider='anthropic', name='claude-test', api_key='anthropic-key', base_url=base_url),
     )
 
     assert count == 12
-    assert calls['url'] == 'https://anthropic.local/v1/messages/count_tokens'
+    assert calls['url'] == expected_url
     assert calls['headers']['x-api-key'] == 'anthropic-key'
     assert calls['headers']['anthropic-version'] == tokenizer.ANTHROPIC_VERSION
     assert calls['json'] == {

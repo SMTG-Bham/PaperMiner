@@ -20,6 +20,7 @@ import tiktoken
 from paperminertoolkit.extraction._anthropic import (
     ANTHROPIC_VERSION as ANTHROPIC_VERSION,
     DEFAULT_ANTHROPIC_BASE_URL as DEFAULT_ANTHROPIC_BASE_URL,
+    messages_url,
     request_headers,
 )
 from paperminertoolkit.settings import DEFAULT_MODEL
@@ -154,14 +155,13 @@ def _anthropic_token_count(text: str, model_config: _ModelConfigSource) -> int:
     if not api_key:
         raise ValueError('Anthropic token counting requires an API key.')
     model = _model_name(model_config)
-    base_url = getattr(model_config, 'base_url', None) or DEFAULT_ANTHROPIC_BASE_URL
     payload = {
         'model': model,
         'messages': [{'role': 'user', 'content': text}],
     }
     headers = request_headers(api_key)
     response = requests.post(
-        f'{base_url.rstrip("/")}/v1/messages/count_tokens',
+        f'{messages_url(getattr(model_config, "base_url", None))}/count_tokens',
         headers=headers,
         json=payload,
         timeout=60,
