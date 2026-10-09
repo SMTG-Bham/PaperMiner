@@ -133,6 +133,35 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec='seconds')
 
 
+def set_pipeline_status(paper: _Paper, column: str, status: str, error: str | None = None) -> None:
+    """Update a paper's pipeline status and error message in place.
+
+    Parameters
+    ----------
+    paper : dict[str, Any]
+        Mutable corpus paper row. This helper does not write to the database.
+    column : str
+        Recognized pipeline column to update.
+    status : str
+        New stage status.
+    error : str or None, optional
+        Non-empty failure detail. Success clears an earlier error when no new
+        error is supplied; other statuses retain the earlier error.
+
+    Raises
+    ------
+    KeyError
+        If ``column`` is not a recognized pipeline column.
+    """
+    if column not in PIPELINE_COLUMNS:
+        raise KeyError(f'Unknown pipeline status column: {column}')
+    paper[column] = status
+    if error:
+        paper['last_error'] = error
+    elif status in {'succeeded', 'stored'}:
+        paper['last_error'] = ''
+
+
 def connect(db_path: str | PathLike[str]) -> sqlite3.Connection:
     """Open and initialize a corpus database.
 

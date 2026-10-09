@@ -8,11 +8,14 @@ them, and the wiring that makes each archive's module address its own service.
 from __future__ import annotations
 
 import json
+from copy import deepcopy
+from types import ModuleType
 from typing import Any
 
 import pytest
 
 import paperminertoolkit.providers.biorxiv as biorxiv
+import paperminertoolkit.providers.chemrxiv as chemrxiv
 import paperminertoolkit.providers.medrxiv as medrxiv
 from paperminertoolkit.providers import rxiv as _rxiv
 
@@ -20,6 +23,51 @@ from tests.doubles import FakeResponse, FakeSession
 
 ARCHIVES = [medrxiv, biorxiv]
 ARCHIVE_IDS = ['medrxiv', 'biorxiv']
+
+
+@pytest.mark.parametrize('archive', [*ARCHIVES, chemrxiv], ids=[*ARCHIVE_IDS, 'chemrxiv'])
+def test_version_collapse_preserves_order_sparse_fields_and_inputs(archive: ModuleType) -> None:
+    """Keep first appearance and earlier values when a revision omits them."""
+    entries = [
+        {'paper_id': 'first', 'version': '1', 'publication_date': '2024-01-02',
+         'title': 'Original', 'count': 3, 'flag': True, 'categories': ['Science']},
+        {'paper_id': 'second', 'version': '1'},
+        {'paper_id': 'first', 'version': '2', 'publication_date': '2024-03-01',
+         'title': 'Revised', 'count': 0, 'flag': False, 'categories': []},
+        {'title': 'Unidentifiable'},
+    ]
+    original = deepcopy(entries)
+
+    result = archive.latest_versions(entries)
+
+    assert result == [
+        {'paper_id': 'first', 'version': '2', 'publication_date': '2024-01-02',
+         'title': 'Revised', 'count': 3, 'flag': True, 'categories': ['Science']},
+        {'paper_id': 'second', 'version': '1'},
+    ]
+    assert entries == original
+    assert result[1] is not entries[1]
+
+
+@pytest.mark.parametrize('archive', [*ARCHIVES, chemrxiv], ids=[*ARCHIVE_IDS, 'chemrxiv'])
+@pytest.mark.parametrize(('earlier_version', 'later_version'), [
+    ('2', '2'), (None, 'unavailable'), ('NA', 0),
+])
+def test_version_ties_favor_later_input_without_inventing_dates(
+    archive: ModuleType,
+    earlier_version: object,
+    later_version: object,
+) -> None:
+    """Use input order to break ties, including missing or nonnumeric versions."""
+    result = archive.latest_versions([
+        {'paper_id': 'one', 'version': earlier_version, 'title': 'Earlier'},
+        {'paper_id': 'one', 'version': later_version, 'title': 'Later'},
+    ])
+
+    assert len(result) == 1
+    assert result[0]['title'] == 'Later'
+    assert result[0]['publication_date'] == ''
+    assert result[0]['version'] == (later_version or earlier_version)
 
 
 def test_message_ignores_non_mapping_entries() -> None:

@@ -25,12 +25,12 @@ from paperminertoolkit.extraction.compression import compression_config, maybe_c
 from paperminertoolkit.corpus.documents import (extract_pdf_images,
                                     read_document_text,
                                     read_pdf_text)
-from paperminertoolkit.corpus.database import (PIPELINE_COLUMNS,
-                                    connect,
+from paperminertoolkit.corpus.database import (connect,
                                     get_asset,
                                     get_figure_assets,
                                     paper_rows,
                                     set_figure_extraction_status,
+                                    set_pipeline_status as _set_status,
                                     upsert_paper)
 from paperminertoolkit.extraction.extract import build_scrape_prompt, combine_material_records, scrape_images, scrape_text, token_length
 from paperminertoolkit.corpus.filtering import active_filter_stack, current_filter_statuses, filter_expression, filter_overview
@@ -211,34 +211,6 @@ def _delete_file(path: str | PathLike[str] | None) -> None:
     """
     if path and os.path.isfile(path):
         os.remove(path)
-
-
-def _set_status(paper: _Paper, column: str, status: str, error: str | None = None) -> None:
-    """Update a paper's pipeline status and error message.
-
-    Parameters
-    ----------
-    paper : _Paper
-        Corpus paper row to update.
-    column : str
-        Pipeline status column.
-    status : str
-        New stage status.
-    error : str, optional
-        Error text to store for a failed stage.
-
-    Raises
-    ------
-    KeyError
-        If ``column`` is not a recognized pipeline status column.
-    """
-    if column not in PIPELINE_COLUMNS:
-        raise KeyError(f'Unknown pipeline status column: {column}')
-    paper[column] = status
-    if error:
-        paper['last_error'] = error
-    elif status in {'succeeded', 'stored'}:
-        paper['last_error'] = ''
 
 
 def _safe_path_part(value: object) -> str:

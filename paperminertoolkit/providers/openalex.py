@@ -23,7 +23,7 @@ import gzip
 import os
 import time
 from collections.abc import Mapping, Sequence
-from typing import Any, TypeAlias
+from typing import Any, Literal, TypeAlias
 from urllib.parse import quote
 
 import requests
@@ -633,6 +633,32 @@ def pdf_candidates(work: Mapping[str, Any]) -> list[str]:
     return list(dict.fromkeys(url for url in candidates if url))
 
 
+def _content_url(work: Mapping[str, Any], kind: Literal['pdf', 'grobid_xml']) -> str:
+    """Resolve a cached content URL from explicit metadata or availability.
+
+    Parameters
+    ----------
+    work : Mapping[str, Any]
+        OpenAlex work record containing content metadata.
+    kind : {'pdf', 'grobid_xml'}
+        Cached document to locate.
+
+    Returns
+    -------
+    str
+        Explicit URL or conventional endpoint, empty when unavailable.
+    """
+    content_urls = work.get('content_urls') or {}
+    if isinstance(content_urls, Mapping) and content_urls.get(kind):
+        return str(content_urls[kind])
+    has_content = work.get('has_content') or {}
+    if not isinstance(has_content, Mapping) or not has_content.get(kind):
+        return ''
+    identifier = work_id(work)
+    suffix = {'pdf': 'pdf', 'grobid_xml': 'grobid-xml'}[kind]
+    return f'{CONTENT_BASE_URL}/{identifier}.{suffix}' if identifier else ''
+
+
 def cached_pdf_url(work: Mapping[str, Any]) -> str:
     """Return OpenAlex's own copy of a work's PDF, if it holds one.
 
@@ -652,14 +678,7 @@ def cached_pdf_url(work: Mapping[str, Any]) -> str:
     str
         Cached PDF URL, or an empty string when OpenAlex holds no PDF.
     """
-    content_urls = work.get('content_urls') or {}
-    if isinstance(content_urls, Mapping) and content_urls.get('pdf'):
-        return str(content_urls['pdf'])
-    has_content = work.get('has_content') or {}
-    if not isinstance(has_content, Mapping) or not has_content.get('pdf'):
-        return ''
-    identifier = work_id(work)
-    return f'{CONTENT_BASE_URL}/{identifier}.pdf' if identifier else ''
+    return _content_url(work, 'pdf')
 
 
 def grobid_xml_url(work: Mapping[str, Any]) -> str:
@@ -675,14 +694,7 @@ def grobid_xml_url(work: Mapping[str, Any]) -> str:
     str
         TEI content URL, or an empty string when no GROBID parse is available.
     """
-    content_urls = work.get('content_urls') or {}
-    if isinstance(content_urls, Mapping) and content_urls.get('grobid_xml'):
-        return str(content_urls['grobid_xml'])
-    has_content = work.get('has_content') or {}
-    if not isinstance(has_content, Mapping) or not has_content.get('grobid_xml'):
-        return ''
-    identifier = work_id(work)
-    return f'{CONTENT_BASE_URL}/{identifier}.grobid-xml' if identifier else ''
+    return _content_url(work, 'grobid_xml')
 
 
 def request_content(

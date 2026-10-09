@@ -346,6 +346,22 @@ def test_latest_versions_does_not_let_a_sparse_revision_blank_a_field() -> None:
     assert collapsed[0]['abstract'] == 'First posting.'
 
 
+def test_latest_versions_uses_stems_without_changing_registered_dois() -> None:
+    """Group by explicit or derived stems while preserving the selected DOI."""
+    first = {'chemrxiv_doi': '10.26434/chemrxiv.15007737/v1',
+             'paper_id': 'doi:10.26434/chemrxiv.15007737/v1', 'version': '1'}
+    second = {'chemrxiv_doi': '10.26434/chemrxiv.15007737/v2',
+              'paper_id': 'doi:10.1234/published', 'version': '2'}
+
+    result = chemrxiv.latest_versions([first, second])
+
+    assert len(result) == 1
+    assert result[0]['chemrxiv_doi'] == '10.26434/chemrxiv.15007737/v2'
+    assert result[0]['paper_id'] == 'doi:10.1234/published'
+    # An explicit stem takes precedence over one derived from the DOI.
+    assert len(chemrxiv.latest_versions([first, {**second, 'chemrxiv_stem': 'other'}])) == 2
+
+
 def test_request_paces_consecutive_calls_with_the_courtesy_delay() -> None:
     """Space consecutive requests through the shared window."""
     slept: list[float] = []

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import time
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -99,6 +100,26 @@ def test_grobid_content_urls_use_metadata_then_the_canonical_endpoint() -> None:
     record['has_content'] = {'grobid_xml': False}
     assert openalex.grobid_xml_url(record) == ''
     assert openalex.grobid_xml_url({'has_content': {'grobid_xml': True}}) == ''
+
+
+@pytest.mark.parametrize(('resolve', 'kind', 'suffix'), [
+    (openalex.cached_pdf_url, 'pdf', 'pdf'),
+    (openalex.grobid_xml_url, 'grobid_xml', 'grobid-xml'),
+])
+def test_content_urls_preserve_explicit_overrides_and_require_usable_availability(
+    resolve: Callable[[Mapping[str, Any]], str],
+    kind: str,
+    suffix: str,
+) -> None:
+    """Honor explicit URLs independently of IDs and ignore malformed containers."""
+    assert resolve({'content_urls': {kind: 'https://example.org/explicit'},
+                    'has_content': {kind: False}}) == 'https://example.org/explicit'
+    assert resolve({'id': 'https://openalex.org/W9', 'content_urls': 'invalid',
+                    'has_content': {kind: True}}) == f'{openalex.CONTENT_BASE_URL}/W9.{suffix}'
+    for malformed in (None, 'invalid', [kind]):
+        assert resolve({'id': 'W9', 'content_urls': malformed,
+                        'has_content': malformed}) == ''
+    assert resolve({'has_content': {kind: True}}) == ''
 
 
 def test_full_text_document_downloads_metered_tei_and_records_cost() -> None:

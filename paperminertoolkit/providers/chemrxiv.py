@@ -778,22 +778,6 @@ def total_results(payload: Mapping[str, Any] | None) -> int:
     return int(total) if total.isdigit() else 0
 
 
-def _version_rank(entry: Mapping[str, Any]) -> int:
-    """Return a record's posted version as a sortable number.
-
-    Parameters
-    ----------
-    entry : Mapping[str, Any]
-        Parsed chemRxiv record.
-
-    Returns
-    -------
-    int
-        Version number, or ``0`` when the record carries none.
-    """
-    return _rxiv._version_rank(entry)
-
-
 def latest_versions(entries: Sequence[Mapping[str, Any]]) -> list[_ChemrxivRecord]:
     """Reduce parsed records to one entry per preprint, keeping the newest.
 
@@ -821,24 +805,12 @@ def latest_versions(entries: Sequence[Mapping[str, Any]]) -> list[_ChemrxivRecor
     list[dict[str, Any]]
         One record per preprint, in first-appearance order.
     """
-    best: dict[str, _ChemrxivRecord] = {}
-    for entry in entries:
-        key = str(entry.get('chemrxiv_stem') or chemrxiv_stem(entry.get('chemrxiv_doi'))
-                  or entry.get('paper_id') or '')
-        if not key:
-            continue
-        current = best.get(key)
-        if current is None:
-            best[key] = dict(entry)
-            continue
-        newer, older = ((entry, current) if _version_rank(entry) >= _version_rank(current)
-                        else (current, entry))
-        merged = {**dict(older), **{field: value for field, value in newer.items() if value}}
-        merged['publication_date'] = min(filter(None, (current.get('publication_date'),
-                                                       entry.get('publication_date'))),
-                                         default='')
-        best[key] = merged
-    return list(best.values())
+    return _rxiv.collapse_versions(
+        entries,
+        lambda entry: str(entry.get('chemrxiv_stem')
+                          or chemrxiv_stem(entry.get('chemrxiv_doi'))
+                          or entry.get('paper_id') or ''),
+    )
 
 
 def parse_query(query: str) -> tuple[list[str], dict[str, str]]:

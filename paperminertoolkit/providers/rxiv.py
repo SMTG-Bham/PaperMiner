@@ -45,7 +45,7 @@ which is the difference between a slow search and one that looks hung.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, TypeAlias
 from urllib.parse import urlsplit
@@ -644,14 +644,41 @@ def latest_versions(server: RxivServer,
     list[dict[str, Any]]
         One record per preprint, in first-appearance order.
     """
+    return collapse_versions(
+        entries, lambda entry: str(entry.get(server.id_column) or entry.get('paper_id') or ''),
+    )
+
+
+def collapse_versions(
+    entries: Sequence[Mapping[str, Any]],
+    key: Callable[[Mapping[str, Any]], str],
+) -> list[RxivRecord]:
+    """Merge preprint revisions while preserving their first posting date.
+
+    Equal version numbers favor the later input record. Only truthy values
+    from the newer revision overwrite older fields; first appearance controls
+    the order of papers, and no input mapping is changed.
+
+    Parameters
+    ----------
+    entries : Sequence[Mapping[str, Any]]
+        Normalized preprint records carrying version and publication date.
+    key : callable
+        Provider-specific grouping key; an empty key excludes a record.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        One merged record per key, in first-appearance order.
+    """
     best: dict[str, RxivRecord] = {}
     for entry in entries:
-        key = str(entry.get(server.id_column) or entry.get('paper_id') or '')
-        if not key:
+        identifier = key(entry)
+        if not identifier:
             continue
-        current = best.get(key)
+        current = best.get(identifier)
         if current is None:
-            best[key] = dict(entry)
+            best[identifier] = dict(entry)
             continue
         newer, older = ((entry, current) if _version_rank(entry) >= _version_rank(current)
                         else (current, entry))
@@ -659,7 +686,7 @@ def latest_versions(server: RxivServer,
         merged['publication_date'] = min(filter(None, (current.get('publication_date'),
                                                        entry.get('publication_date'))),
                                          default='')
-        best[key] = merged
+        best[identifier] = merged
     return list(best.values())
 
 
