@@ -233,6 +233,32 @@ def _load_recipe_text(content: str) -> dict[str, Any]:
     return _validate_recipe(obj, 'uploaded recipe')
 
 
+def _atomic_json(path: Path, payload: dict[str, Any], *,
+                 prefix: str, indent: int | None = None) -> None:
+    """Replace one JSON file after serialization succeeds, cleaning up on failure.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        Destination whose parent directory already exists.
+    payload : dict[str, Any]
+        JSON data written with UTF-8 and a final newline.
+    prefix : str
+        Prefix identifying temporary snapshots or review decisions.
+    indent : int or None, optional
+        JSON indentation; snapshots retain their compact representation.
+    """
+    fd, temp = tempfile.mkstemp(prefix=prefix, suffix='.tmp', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+            json.dump(payload, handle, indent=indent, ensure_ascii=False)
+            handle.write('\n')
+        os.replace(temp, path)
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
+
+
 class ReviewApp:
     """One localhost review process with an active source selection."""
 
@@ -436,15 +462,7 @@ class ReviewApp:
             except (OSError, ValueError, TypeError):
                 pass
         path.parent.mkdir(parents=True, exist_ok=True)
-        fd, temp = tempfile.mkstemp(prefix='.inputs-', suffix='.tmp', dir=path.parent)
-        try:
-            with os.fdopen(fd, 'w', encoding='utf-8') as handle:
-                json.dump(self.input_snapshot, handle, ensure_ascii=False)
-                handle.write('\n')
-            os.replace(temp, path)
-        finally:
-            if os.path.exists(temp):
-                os.unlink(temp)
+        _atomic_json(path, self.input_snapshot, prefix='.inputs-')
 
     def save(self, decisions: dict[str, Any]) -> None:
         """Atomically save decisions without writing to the input CSVs."""
@@ -458,15 +476,7 @@ class ReviewApp:
                    'recipe': self.session['recipe'],
                    'input_cache': f"{self.session['fingerprint']}.inputs.json",
                    'decisions': decisions}
-        fd, temp = tempfile.mkstemp(prefix='.review-', suffix='.tmp', dir=self.review_path.parent)
-        try:
-            with os.fdopen(fd, 'w', encoding='utf-8') as handle:
-                json.dump(payload, handle, indent=2, ensure_ascii=False)
-                handle.write('\n')
-            os.replace(temp, self.review_path)
-        finally:
-            if os.path.exists(temp):
-                os.unlink(temp)
+        _atomic_json(self.review_path, payload, prefix='.review-', indent=2)
         self.decisions = decisions
         self.session['decisions'] = decisions
 

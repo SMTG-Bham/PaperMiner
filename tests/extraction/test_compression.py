@@ -84,30 +84,6 @@ def test_text_compression_decision_uses_scope_mode_and_token_budget(monkeypatch:
     ) is True
 
 
-def test_request_token_budget_reserves_prompt_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Test that request budgets reserve prompt tokens."""
-    calls = {}
-    cfg = model_config()
-    monkeypatch.setattr(compression, 'prompt_token_reserve', lambda prompt, model_config=None, buffer_tokens=500: calls.update({
-        'prompt': prompt,
-        'reserve_model_config': model_config,
-        'buffer_tokens': buffer_tokens,
-    }) or 25)
-    monkeypatch.setattr(compression, 'usable_input_token_limit', lambda model_config=None, reserve_tokens=0: calls.update({
-        'limit_model_config': model_config,
-        'reserve_tokens': reserve_tokens,
-    }) or 75)
-
-    assert compression._request_token_budget('extract prompt', cfg) == 75
-    assert calls == {
-        'prompt': 'extract prompt',
-        'reserve_model_config': cfg,
-        'buffer_tokens': 500,
-        'limit_model_config': cfg,
-        'reserve_tokens': 25,
-    }
-
-
 def test_ideal_compression_ratio_uses_fixed_values_or_auto_budget() -> None:
     """Test fixed and automatically calculated compression ratios."""
     assert compression.ideal_compression_ratio(1000, 100, compression.CompressionConfig(ratio=0.4)) == 0.4

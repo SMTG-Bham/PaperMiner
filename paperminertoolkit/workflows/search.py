@@ -8,14 +8,12 @@ that appear in multiple sources.
 from __future__ import annotations
 
 import datetime
-import html
 import sqlite3
 from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from types import ModuleType
 from typing import Any
 import pandas as pd
-import re
 from tqdm import tqdm
 
 from paperminertoolkit.providers import (arxiv, biorxiv, chemrxiv, core, elsevier, medrxiv,
@@ -31,6 +29,7 @@ from paperminertoolkit.corpus.database import (PAPER_FIELDS,
                                                normalize_paper,
                                                upsert_paper,
                                                upsert_papers)
+from paperminertoolkit.providers import base as provider
 from paperminertoolkit.providers import registry as sources
 
 SEARCH_SOURCES = {'all', *sources.names(sources.SEARCH)}
@@ -143,10 +142,7 @@ def _clean_search_abstract(value: object) -> str:
         return ''
     if isinstance(value, list):
         value = ' '.join(str(part) for part in value if part)
-    text = html.unescape(str(value))
-    text = re.sub(r'<[^>]+>', ' ', text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
+    return provider.html_plain_text(str(value))
 
 
 def _abstract_from_search_record(record: Mapping[str, Any]) -> str:
@@ -179,6 +175,27 @@ def _elsevier_rows(results: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=SEARCH_FIELDS)
 
 
+def _paper_rows(records: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
+    """Normalize mapped provider records and their search abstracts.
+
+    Parameters
+    ----------
+    records : Iterable[Mapping[str, Any]]
+        Records already mapped onto paper field names by their provider.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Paper rows in input order with the fixed search column order.
+    """
+    rows = []
+    for record in records:
+        normalized = normalize_paper(record)
+        normalized['abstract'] = _clean_search_abstract(record.get('abstract'))
+        rows.append(normalized)
+    return pd.DataFrame(rows, columns=SEARCH_FIELDS)
+
+
 def _core_rows(works: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
     """Convert CORE work records into normalized paper rows.
 
@@ -192,13 +209,7 @@ def _core_rows(works: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
     pandas.DataFrame
         Normalized paper rows.
     """
-    rows = []
-    for work in works:
-        record = core.work_to_paper(work)
-        normalized = normalize_paper(record)
-        normalized['abstract'] = _clean_search_abstract(record.get('abstract'))
-        rows.append(normalized)
-    return pd.DataFrame(rows, columns=SEARCH_FIELDS)
+    return _paper_rows(core.work_to_paper(work) for work in works)
 
 
 def core_search(query: str, count: int = 200) -> pd.DataFrame:
@@ -247,13 +258,7 @@ def core_search(query: str, count: int = 200) -> pd.DataFrame:
 
 def _openalex_rows(works: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
     """Convert OpenAlex work records into normalized paper rows."""
-    rows = []
-    for work in works:
-        normalized = normalize_paper(openalex.work_to_paper(work))
-        abstract = openalex.reconstruct_abstract(work.get('abstract_inverted_index'))
-        normalized['abstract'] = _clean_search_abstract(abstract)
-        rows.append(normalized)
-    return pd.DataFrame(rows, columns=SEARCH_FIELDS)
+    return _paper_rows(openalex.work_to_paper(work) for work in works)
 
 
 def openalex_search(query: str, count: int = 200) -> pd.DataFrame:
@@ -298,12 +303,7 @@ def openalex_search(query: str, count: int = 200) -> pd.DataFrame:
 
 def _pubmed_rows(articles: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
     """Convert PubMed article records into normalized paper rows."""
-    rows = []
-    for article in articles:
-        normalized = normalize_paper(article)
-        normalized['abstract'] = _clean_search_abstract(article.get('abstract'))
-        rows.append(normalized)
-    return pd.DataFrame(rows, columns=SEARCH_FIELDS)
+    return _paper_rows(articles)
 
 
 def pubmed_search(query: str, count: int = 200) -> pd.DataFrame:
@@ -360,12 +360,7 @@ def pubmed_search(query: str, count: int = 200) -> pd.DataFrame:
 
 def _arxiv_rows(entries: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
     """Convert arXiv entry records into normalized paper rows."""
-    rows = []
-    for entry in entries:
-        normalized = normalize_paper(entry)
-        normalized['abstract'] = _clean_search_abstract(entry.get('abstract'))
-        rows.append(normalized)
-    return pd.DataFrame(rows, columns=SEARCH_FIELDS)
+    return _paper_rows(entries)
 
 
 def arxiv_search(query: str, count: int = 200) -> pd.DataFrame:
@@ -448,12 +443,7 @@ def arxiv_search(query: str, count: int = 200) -> pd.DataFrame:
 
 def _rxiv_rows(entries: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
     """Convert preprint-server records into normalized paper rows."""
-    rows = []
-    for entry in entries:
-        normalized = normalize_paper(entry)
-        normalized['abstract'] = _clean_search_abstract(entry.get('abstract'))
-        rows.append(normalized)
-    return pd.DataFrame(rows, columns=SEARCH_FIELDS)
+    return _paper_rows(entries)
 
 
 def _medrxiv_rows(entries: Iterable[Mapping[str, Any]]) -> pd.DataFrame:

@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 
 import paperminertoolkit.corpus.database as corpus
+from tests.corpus_helpers import read_corpus_frame as read_corpus
 import paperminertoolkit.extraction.scrape as scrape
 from paperminertoolkit.extraction.compression import CompressionConfig
 
@@ -55,12 +56,6 @@ def write_corpus(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
             pdf_path = papers_dir / f'{paper_id}.pdf'
             if pdf_path.is_file():
                 corpus.add_asset(conn, row, pdf_path, role='pdf', kind='pdf', mime_type='application/pdf')
-
-
-def read_corpus(path: Path) -> pd.DataFrame:
-    """Read paper rows from a corpus database as a DataFrame for scrape unit tests."""
-    with corpus.connect(path) as conn:
-        return pd.DataFrame(corpus.paper_rows(conn))
 
 
 class FakeTqdm:
@@ -127,38 +122,18 @@ class FakeModelConfig:
 def test_text_chunks_uses_model_token_estimate_to_split_long_text(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test model-aware text chunking for short and long inputs."""
     text_config = FakeModelConfig('text', name='model')
-    reserve_calls = []
+    budget_calls = []
 
-    def fake_reserve(
-        prompt: str,
-        model_config: FakeModelConfig | None = None,
-        buffer_tokens: int = 500,
-    ) -> int:
-        """Record token reservation arguments and return a fixed reserve."""
-        reserve_calls.append({
-            'prompt': prompt,
-            'model_config': model_config,
-            'buffer_tokens': buffer_tokens,
-        })
-        return 750
-
-    def fake_limit(model_config: FakeModelConfig | None = None, reserve_tokens: int = 2000) -> int:
-        """Validate the token reserve and return a fixed context limit."""
-        assert reserve_tokens == 750
+    def fake_budget(prompt: str, model_config: FakeModelConfig) -> int:
+        """Record the budget input and return a fixed content limit."""
+        budget_calls.append((prompt, model_config))
         return 120000
 
-    def short_count(text: str, model_config: FakeModelConfig | None = None) -> int:
-        """Return a token count that fits the configured context limit."""
-        return 120000
-
-    monkeypatch.setattr(scrape, 'prompt_token_reserve', fake_reserve)
-    monkeypatch.setattr(scrape, 'usable_input_token_limit', fake_limit)
-    monkeypatch.setattr(scrape, 'token_length', short_count)
+    monkeypatch.setattr(scrape, 'request_token_budget', fake_budget)
+    monkeypatch.setattr(scrape, 'token_length', lambda text, model_config=None: 120000)
     assert scrape._text_chunks('short text', text_config, prompt='extract prompt') == ['short text']
-    assert reserve_calls == [{'prompt': 'extract prompt', 'model_config': text_config, 'buffer_tokens': 500}]
+    assert budget_calls == [('extract prompt', text_config)]
 
-    monkeypatch.setattr(scrape, 'prompt_token_reserve', lambda prompt, model_config=None, buffer_tokens=500: 500)
-    monkeypatch.setattr(scrape, 'usable_input_token_limit', lambda model_config=None, reserve_tokens=2000: 120000)
     monkeypatch.setattr(scrape, 'token_length', lambda text, model_config=None: 240001)
     chunks = scrape._text_chunks('abcdef', text_config)
     assert chunks == ['ab', 'cd', 'ef']
@@ -1301,20 +1276,34 @@ def test_figure_package_model_label_falls_back_to_the_figure_identifier() -> Non
     assert package.model_label == 'Figure fig-9'
 
 
-def test_figure_packages_restore_a_missing_image_extension(tmp_path: Path) -> None:
-    """Give an extension-less stored filename a usable image extension."""
+@pytest.mark.parametrize(('original_filename', 'expected_filename'), [
+    (None, 'fig-1.png'),
+    ('', 'fig-1.png'),
+    ('figure-one', 'figure-one.png'),
+    ('../figure one', 'figure_one.png'),
+    ('figure.jpeg', 'figure.jpeg'),
+    ('.hidden', 'hidden.png'),
+])
+def test_figure_packages_preserve_image_filename_and_extension(
+    tmp_path: Path,
+    original_filename: str | None,
+    expected_filename: str,
+) -> None:
+    """Preserve filenames, sanitize path fragments, and default to PNG."""
     packages = scrape._figure_packages(
         [{
             'metadata': {'figure_id': 'fig-1', 'caption': 'Caption.', 'figure_label': 'Figure 1'},
             'content': b'image bytes',
             'source': 'pubmed',
-            'original_filename': 'figure-one',
+            'original_filename': original_filename,
         }],
         tmp_path / 'images',
         force=False,
     )
     assert len(packages) == 1
-    assert packages[0].path.endswith('figure-one.png')
+    path = Path(packages[0].path)
+    assert path == tmp_path / 'images' / expected_filename
+    assert path.read_bytes() == b'image bytes'
 
 
 def test_scrape_papers_layout_mode_requires_a_pdf_for_paper_text_context(
@@ -1339,3 +1328,68 @@ def test_scrape_papers_layout_mode_requires_a_pdf_for_paper_text_context(
     papers = read_corpus(db_path)
     assert papers.loc[0, 'image_scrape_status'] == 'failed'
     assert 'No downloaded PDF asset found for image context' in papers.loc[0, 'last_error']
+
+
+@pytest.mark.parametrize('mode', ['abstract', 'text', 'text-images'])
+def test_later_text_chunk_failure_keeps_partial_records_and_image_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    mode: str,
+) -> None:
+    """Preserve earlier chunk evidence and compressed context after a later failure."""
+    db_path = tmp_path / 'papers.db'
+    output_path = tmp_path / 'scraped.csv'
+    paper = {'paper_id': 'paper-partial'}
+    with corpus.connect(db_path) as conn:
+        for role, content, kind, mime_type in [
+            ('abstract', 'raw evidence', 'text', 'text/plain'),
+            ('text', 'raw evidence', 'text', 'text/plain'),
+            ('pdf', b'pdf placeholder', 'pdf', 'application/pdf'),
+        ]:
+            corpus.add_asset(conn, paper, content, role=role, kind=kind, mime_type=mime_type)
+    contexts = []
+    monkeypatch.setattr(scrape, 'load_recipe', lambda _: sample_recipe())
+    monkeypatch.setattr(scrape, 'ModelConfig', FakeModelConfig)
+    monkeypatch.setattr(scrape, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(scrape, 'maybe_compress_text', lambda text, *args: f'compressed {text}')
+    monkeypatch.setattr(scrape, '_text_chunks', lambda text, *args, **kwargs: ['first', 'second'])
+    monkeypatch.setattr(scrape, 'extract_pdf_images', lambda *args, **kwargs: ['image.png'])
+
+    def extract_chunk(text: str, *args: object, **kwargs: object) -> list[dict[str, str]]:
+        """Return the first chunk's evidence and fail the second request."""
+        if text == 'second':
+            raise RuntimeError('later chunk failed')
+        return [{'Name': 'partial material'}]
+
+    def extract_images(*args: object, **kwargs: Any) -> list[dict[str, str]]:
+        """Capture the shared text context without adding image records."""
+        contexts.append(kwargs['context'])
+        return []
+
+    monkeypatch.setattr(scrape, 'scrape_text', extract_chunk)
+    monkeypatch.setattr(scrape, 'scrape_images', extract_images)
+
+    scrape.scrape_papers(
+        str(db_path), output_path=str(output_path), mode=mode,
+        image_extraction='pages', image_context='paper-text',
+        image_dir=str(tmp_path / 'images'),
+    )
+
+    stage = 'abstract' if mode == 'abstract' else 'text'
+    stored = read_corpus(db_path).iloc[0]
+    records = pd.read_csv(output_path, index_col=0)
+    assert records['Name'].tolist() == ['partial material']
+    assert records['Source'].tolist() == [stage]
+    assert records['Source path'].tolist() == [f'corpus:{stage}']
+    assert stored[f'{stage}_scrape_status'] == 'failed'
+    assert stored[f'num_{stage}_chunks'] == 2
+    assert stored[f'num_{stage}_materials'] == 0
+    if mode == 'text-images':
+        assert contexts == ['compressed compressed raw evidence']
+        assert stored['image_scrape_status'] == 'succeeded'
+        assert stored['last_error'] == ''
+    else:
+        assert contexts == []
+        assert stored['last_error'] == 'later chunk failed'
+    assert f'{stage} for paper paper-partial was split into 2' in capsys.readouterr().err

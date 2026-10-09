@@ -232,6 +232,33 @@ def test_parse_tei_layout_marks_pdf_derived_structure_and_coordinates() -> None:
         parse_tei_layout('<article/>', 'paper:not-tei')
 
 
+def test_wrapped_tei_preserves_namespaced_structure_and_scientific_text() -> None:
+    """Retain inline symbols, coordinates, references, and serialized tables."""
+    content = TEI.replace(
+        'PDF-derived plot.',
+        'H<sub>2</sub>O at 2.50 ± 0.01 μm<sup>2</sup>.',
+    )
+    direct = parse_tei_layout(content, 'paper:science', source_identifier='W1')
+    wrapped = parse_tei_layout(
+        f'<html><body>{content}\n</body></html>',
+        'paper:science',
+        source_identifier='W1',
+    )
+
+    assert wrapped == direct
+    assert wrapped.figures[0].caption == 'H2O at 2.50 ± 0.01 μm2.'
+    assert wrapped.figures[0].boxes == (BoundingBox(2, 10, 20, 210, 120),)
+    assert wrapped.figures[0].reference_sentences[0].text == 'See Figure 1.'
+    assert wrapped.tables[0].content == direct.tables[0].content
+
+
+@pytest.mark.parametrize('tail', ['unexpected prose', '\u2000'])
+def test_wrapped_tei_preserves_rejection_of_non_xml_whitespace_tail(tail: str) -> None:
+    """Reject content that cannot follow the extracted standalone TEI tree."""
+    with pytest.raises(ValueError, match='malformed tei document'):
+        parse_tei_layout(f'<html><body>{TEI}{tail}</body></html>', 'paper:tail')
+
+
 RXIV_JATS = '''<article xmlns:xlink="http://www.w3.org/1999/xlink"
   xmlns:hwp="http://schema.highwire.org/Journal">
   <front><article-meta>

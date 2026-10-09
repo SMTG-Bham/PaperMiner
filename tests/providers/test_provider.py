@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import NoReturn
+from types import MappingProxyType
 import xml.etree.ElementTree as ET
 
 import pytest
@@ -343,6 +344,22 @@ def test_request_mapping_rejects_a_payload_that_is_not_an_object() -> None:
                                  session=session)
 
 
+def test_request_mapping_copies_mapping_payloads_without_copying_nested_values() -> None:
+    """Keep the mapping contract permissive and its copy shallow."""
+    nested = {'value': 1}
+    payload = MappingProxyType({'nested': nested})
+    session = FakeSession([FakeResponse(payload=payload)])
+
+    result = provider.request_mapping('https://example.test', label='Test', limiter=limiter(),
+                                      session=session)
+
+    assert isinstance(result, dict)
+    assert result is not payload
+    assert result['nested'] is nested
+    result['extra'] = True
+    assert 'extra' not in payload
+
+
 def test_request_xml_skips_an_empty_body_and_reports_a_malformed_one() -> None:
     """Read a blank body as nothing found and a broken one as a failure."""
     session = FakeSession([FakeResponse(text='   ')])
@@ -395,6 +412,7 @@ def test_chunked_splits_a_sequence_and_tolerates_a_zero_size() -> None:
 def test_clean_text_collapses_whitespace_and_drops_placeholders() -> None:
     """Report a provider's absent-value placeholder as empty rather than as text."""
     assert provider.clean_text('  many   spaces \n here ') == 'many spaces here'
+    assert provider.clean_text('  spaced   out  ') == 'spaced out'
     assert provider.clean_text(None) == ''
     for placeholder in ['NA', 'n/a', 'None', 'null', '']:
         assert provider.clean_text(placeholder) == ''

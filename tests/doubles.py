@@ -1,9 +1,7 @@
-"""Shared HTTP test doubles for the data-source clients.
+"""Shared HTTP and progress doubles for provider and workflow tests.
 
-Every source client takes an injected HTTP session, so its tests need the same
-two doubles: a prepared response and a session that hands them out in order
-while recording what was asked for. They were written once per source and
-drifted, so they live here instead.
+Responses and sessions prepare HTTP outcomes and record outgoing requests.
+``NullProgress`` silences progress displays without suppressing exceptions.
 """
 
 from __future__ import annotations
@@ -158,3 +156,64 @@ class FakeSession:
             'timeout': timeout,
         })
         return next(self.responses)
+
+
+class NullProgress:
+    """Progress-bar test double that renders nothing."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        """Accept and ignore the progress-bar arguments.
+
+        Parameters
+        ----------
+        *args : object
+            Positional arguments, unused.
+        **kwargs : object
+            Keyword arguments, unused.
+
+        Returns
+        -------
+        None
+            The double is initialized in place.
+        """
+        return None
+
+    def __enter__(self) -> 'NullProgress':
+        """Enter the test-double context.
+
+        Returns
+        -------
+        NullProgress
+            This double.
+        """
+        return self
+
+    def __exit__(self, *_: object) -> bool:
+        """Exit the test-double context.
+
+        Parameters
+        ----------
+        *_ : object
+            Exception details, unused.
+
+        Returns
+        -------
+        bool
+            False, so any exception propagates.
+        """
+        return False
+
+    def update(self, _: int) -> None:
+        """Ignore a progress update.
+
+        Parameters
+        ----------
+        _ : int
+            Completed units, unused.
+
+        Returns
+        -------
+        None
+            Nothing is recorded.
+        """
+        return None

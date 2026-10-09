@@ -91,8 +91,21 @@ def test_openai_token_count_selects_model_encoding_and_falls_back(monkeypatch: p
     assert fallback_calls['name'] == 'o200k_base'
 
 
-def test_anthropic_token_count_uses_count_tokens_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Call Anthropic's Messages token-counting endpoint."""
+@pytest.mark.parametrize(('base_url', 'expected_url'), [
+    (None, 'https://api.anthropic.com/v1/messages/count_tokens'),
+    ('', 'https://api.anthropic.com/v1/messages/count_tokens'),
+    ('https://anthropic.local', 'https://anthropic.local/v1/messages/count_tokens'),
+    ('https://anthropic.local/', 'https://anthropic.local/v1/messages/count_tokens'),
+    ('https://anthropic.local/v1', 'https://anthropic.local/v1/messages/count_tokens'),
+    ('https://anthropic.local/v1/', 'https://anthropic.local/v1/messages/count_tokens'),
+    ('https://anthropic.local/proxy/v1/', 'https://anthropic.local/proxy/v1/messages/count_tokens'),
+])
+def test_anthropic_token_count_uses_count_tokens_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    base_url: str | None,
+    expected_url: str,
+) -> None:
+    """Use the Messages base convention without duplicating its API version."""
     calls = {}
 
     class FakeResponse:
@@ -123,11 +136,11 @@ def test_anthropic_token_count_uses_count_tokens_endpoint(monkeypatch: pytest.Mo
 
     count = tokenizer._anthropic_token_count(
         'paper text',
-        config(provider='anthropic', name='claude-test', api_key='anthropic-key', base_url='https://anthropic.local'),
+        config(provider='anthropic', name='claude-test', api_key='anthropic-key', base_url=base_url),
     )
 
     assert count == 12
-    assert calls['url'] == 'https://anthropic.local/v1/messages/count_tokens'
+    assert calls['url'] == expected_url
     assert calls['headers']['x-api-key'] == 'anthropic-key'
     assert calls['headers']['anthropic-version'] == tokenizer.ANTHROPIC_VERSION
     assert calls['json'] == {
@@ -256,3 +269,27 @@ def test_prompt_token_reserve_counts_prompt_and_adds_buffer(monkeypatch: pytest.
     assert tokenizer.prompt_token_reserve('one two three', model_config=model_config, buffer_tokens=7, minimum=0) == 10
     assert tokenizer.prompt_token_reserve('one', model_config=model_config, buffer_tokens=0, minimum=5) == 5
     assert calls == [('one two three', model_config), ('one', model_config)]
+
+
+def test_request_token_budget_reserves_prompt_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that request budgets reserve prompt tokens."""
+    calls = {}
+    cfg = config()
+    monkeypatch.setattr(tokenizer, 'prompt_token_reserve', lambda prompt, model_config=None, buffer_tokens=500: calls.update({
+        'prompt': prompt,
+        'reserve_model_config': model_config,
+        'buffer_tokens': buffer_tokens,
+    }) or 25)
+    monkeypatch.setattr(tokenizer, 'usable_input_token_limit', lambda model_config=None, reserve_tokens=0: calls.update({
+        'limit_model_config': model_config,
+        'reserve_tokens': reserve_tokens,
+    }) or 75)
+
+    assert tokenizer.request_token_budget('extract prompt', cfg) == 75
+    assert calls == {
+        'prompt': 'extract prompt',
+        'reserve_model_config': cfg,
+        'buffer_tokens': 500,
+        'limit_model_config': cfg,
+        'reserve_tokens': 25,
+    }

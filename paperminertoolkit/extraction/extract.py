@@ -18,7 +18,7 @@ from typing import Any
 from paperminertoolkit.extraction.compression import CompressionConfig
 from paperminertoolkit.extraction.models import ModelConfig, query_images, query_text
 from paperminertoolkit.settings import DEFAULT_MODEL
-from paperminertoolkit.extraction.tokenizer import _ModelConfigSource, count_text_tokens, prompt_token_reserve, usable_input_token_limit
+from paperminertoolkit.extraction.tokenizer import _ModelConfigSource, count_text_tokens, request_token_budget
 
 
 def token_length(
@@ -555,8 +555,7 @@ def convert_units(
             memory.append(1)
             values_str += f'{value}\n'
     config = model_config or ModelConfig.from_profile('text')
-    reserve_tokens = prompt_token_reserve(prompt, model_config=config, buffer_tokens=500)
-    token_budget = usable_input_token_limit(config, reserve_tokens=reserve_tokens)
+    token_budget = request_token_budget(prompt, config)
     coeff = token_length(values_str, model_config=config) / token_budget
     if coeff <= 1:
         values_strs = [values_str]

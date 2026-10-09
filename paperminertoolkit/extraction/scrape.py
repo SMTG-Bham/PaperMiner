@@ -25,18 +25,18 @@ from paperminertoolkit.extraction.compression import compression_config, maybe_c
 from paperminertoolkit.corpus.documents import (extract_pdf_images,
                                     read_document_text,
                                     read_pdf_text)
-from paperminertoolkit.corpus.database import (PIPELINE_COLUMNS,
-                                    connect,
+from paperminertoolkit.corpus.database import (connect,
                                     get_asset,
                                     get_figure_assets,
                                     paper_rows,
                                     set_figure_extraction_status,
+                                    set_pipeline_status as _set_status,
                                     upsert_paper)
 from paperminertoolkit.extraction.extract import build_scrape_prompt, combine_material_records, scrape_images, scrape_text, token_length
 from paperminertoolkit.corpus.filtering import active_filter_stack, current_filter_statuses, filter_expression, filter_overview
 from paperminertoolkit.extraction.models import ModelConfig
 from paperminertoolkit.extraction.recipes import load_recipe
-from paperminertoolkit.extraction.tokenizer import _ModelConfigSource, prompt_token_reserve, usable_input_token_limit
+from paperminertoolkit.extraction.tokenizer import _ModelConfigSource, request_token_budget
 from paperminertoolkit.workflows.figures import store_pdf_layout_figures
 
 SCRAPE_MODES = {'abstract', 'text', 'images', 'text-images'}
@@ -64,8 +64,7 @@ def _text_chunks(text: str, model_config: _ModelConfigSource, prompt: str = '') 
     list[str]
         One or more character-contiguous text chunks.
     """
-    reserve_tokens = prompt_token_reserve(prompt, model_config=model_config, buffer_tokens=500)
-    token_budget = usable_input_token_limit(model_config, reserve_tokens=reserve_tokens)
+    token_budget = request_token_budget(prompt, model_config)
     coeff = token_length(text, model_config=model_config) / token_budget
     if coeff <= 1:
         return [text]
@@ -213,34 +212,6 @@ def _delete_file(path: str | PathLike[str] | None) -> None:
         os.remove(path)
 
 
-def _set_status(paper: _Paper, column: str, status: str, error: str | None = None) -> None:
-    """Update a paper's pipeline status and error message.
-
-    Parameters
-    ----------
-    paper : _Paper
-        Corpus paper row to update.
-    column : str
-        Pipeline status column.
-    status : str
-        New stage status.
-    error : str, optional
-        Error text to store for a failed stage.
-
-    Raises
-    ------
-    KeyError
-        If ``column`` is not a recognized pipeline status column.
-    """
-    if column not in PIPELINE_COLUMNS:
-        raise KeyError(f'Unknown pipeline status column: {column}')
-    paper[column] = status
-    if error:
-        paper['last_error'] = error
-    elif status in {'succeeded', 'stored'}:
-        paper['last_error'] = ''
-
-
 def _safe_path_part(value: object) -> str:
     """Convert a value into a safe path fragment.
 
@@ -376,12 +347,8 @@ def _figure_packages(
         figure_id = str(metadata.get('figure_id') or '')
         if not figure_id:
             continue
-        filename = asset.get('original_filename') or f'{figure_id}.png'
-        path = os.path.join(temp_dir, _safe_path_part(filename))
-        if not os.path.splitext(path)[1]:
-            path += '.png'
-        with open(path, 'wb') as out_file:
-            out_file.write(asset['content'])
+        path = _asset_path(asset, temp_dir, f'{figure_id}.png')
+        assert path is not None
         packages.append(_FigurePackage(
             path=path,
             figure_id=figure_id,
@@ -758,49 +725,33 @@ def scrape_papers(db_path: str = 'papers.db',
                     scraped_figures: list[_FigurePackage] = []
                     text = None
 
-                    if should_scrape_abstract:
-                        if not force and row.get('abstract_scrape_status') == 'succeeded':
-                            summary['abstract_skipped'] += 1
+                    if should_scrape_abstract or should_scrape_text:
+                        stage = 'abstract' if should_scrape_abstract else 'text'
+                        status_column = f'{stage}_scrape_status'
+                        if not force and row.get(status_column) == 'succeeded':
+                            summary[f'{stage}_skipped'] += 1
                         else:
-                            summary['abstract_attempted'] += 1
+                            summary[f'{stage}_attempted'] += 1
                             try:
-                                if not abstract_path:
-                                    raise FileNotFoundError('No downloaded abstract asset found for abstract scrape.')
-                                text = read_document_text(abstract_path)
-                                prompt = build_scrape_prompt(recipe_data, source='text')
-                                text = maybe_compress_text(text, prompt, text_config, compression)
-                                text_chunks = _text_chunks(text, text_config, prompt=prompt)
-                                _record_chunk_plan(row, 'abstract', text_chunks, text_config, summary)
-                                for text_chunk in text_chunks:
-                                    response = scrape_text(text_chunk, recipe_data, model_config=text_config)
-                                    text_materials.extend(response)
-                                row['num_abstract_materials'] = len(text_materials)
-                                _set_status(row, 'abstract_scrape_status', 'succeeded')
-                            except Exception as e:
-                                _set_status(row, 'abstract_scrape_status', 'failed', str(e))
-
-                    if should_scrape_text:
-                        if not force and row.get('text_scrape_status') == 'succeeded':
-                            summary['text_skipped'] += 1
-                        else:
-                            summary['text_attempted'] += 1
-                            try:
-                                source_path = text_path or pdf_path
+                                source_path = abstract_path if should_scrape_abstract else text_path or pdf_path
                                 if not source_path:
+                                    if should_scrape_abstract:
+                                        raise FileNotFoundError('No downloaded abstract asset found for abstract scrape.')
                                     raise FileNotFoundError('No downloaded text or PDF asset found for text scrape.')
                                 text = read_document_text(source_path)
-                                text_source_path = 'corpus:text' if text_path else 'corpus:pdf'
+                                if should_scrape_text:
+                                    text_source_path = 'corpus:text' if text_path else 'corpus:pdf'
                                 prompt = build_scrape_prompt(recipe_data, source='text')
                                 text = maybe_compress_text(text, prompt, text_config, compression)
                                 text_chunks = _text_chunks(text, text_config, prompt=prompt)
-                                _record_chunk_plan(row, 'text', text_chunks, text_config, summary)
+                                _record_chunk_plan(row, stage, text_chunks, text_config, summary)
                                 for text_chunk in text_chunks:
                                     response = scrape_text(text_chunk, recipe_data, model_config=text_config)
                                     text_materials.extend(response)
-                                row['num_text_materials'] = len(text_materials)
-                                _set_status(row, 'text_scrape_status', 'succeeded')
+                                row[f'num_{stage}_materials'] = len(text_materials)
+                                _set_status(row, status_column, 'succeeded')
                             except Exception as e:
-                                _set_status(row, 'text_scrape_status', 'failed', str(e))
+                                _set_status(row, status_column, 'failed', str(e))
 
                     if should_scrape_images:
                         image_paths = []

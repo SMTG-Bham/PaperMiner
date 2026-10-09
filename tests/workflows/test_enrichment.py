@@ -7,17 +7,17 @@ and the batched orchestration that keeps enrichment idempotent and resumable.
 
 from __future__ import annotations
 
-import contextlib
 import json
-import sqlite3
 from collections.abc import Iterable, Iterator, Mapping
+from itertools import chain
 from pathlib import Path
 from typing import Any
 
 import pytest
-import requests
 
 import paperminertoolkit.corpus.database as corpus
+from tests.corpus_helpers import open_corpus
+from tests.doubles import FakeResponse, FakeSession
 import paperminertoolkit.workflows.enrichment as enrichment
 
 
@@ -132,82 +132,21 @@ def openalex_work(doi: str | None = 'https://doi.org/10.1234/Example',
     }
 
 
-class FakeResponse:
-    """Prepared OpenAlex JSON response with a configurable status code."""
-
-    def __init__(self, payload: dict[str, Any], status_code: int = 200) -> None:
-        """Store the prepared payload and status."""
-        self.payload = payload
-        self.status_code = status_code
-        self.headers: dict[str, str] = {}
-
-    def raise_for_status(self) -> None:
-        """Validate the prepared response status."""
-        if self.status_code >= 400:
-            raise requests.HTTPError(f'{self.status_code} error', response=self)
-
-    def json(self) -> dict[str, Any]:
-        """Return the prepared JSON payload."""
-        return self.payload
+def empty_pages(payload: dict[str, Any]) -> Iterator[FakeResponse]:
+    """Keep returning fresh empty responses after a prepared provider queue ends."""
+    while True:
+        yield FakeResponse(payload=payload)
 
 
-class FakeOpenAlexSession:
-    """Return prepared OpenAlex responses and record request arguments."""
-
-    def __init__(self, responses: Iterable[FakeResponse]) -> None:
-        """Initialize the session with prepared responses."""
-        self.responses = iter(responses)
-        self.calls: list[dict[str, Any]] = []
-
-    def get(self, url: str, params: Mapping[str, Any], headers: Mapping[str, str],
-            timeout: float) -> FakeResponse:
-        """Record the request and return the next prepared response."""
-        self.calls.append({'url': url, 'params': dict(params), 'timeout': timeout})
-        return next(self.responses, FakeResponse({'results': []}))
+def make_openalex_session(responses: Iterable[FakeResponse]) -> FakeSession:
+    """Record requests and return prepared OpenAlex responses, then empty pages."""
+    return FakeSession(chain(responses, empty_pages({'results': []})))
 
 
-class FakeCrossrefResponse:
-    """Successful Crossref response wrapping one prepared message."""
-
-    def __init__(self, message: dict[str, Any], status_code: int = 200) -> None:
-        """Store the prepared Crossref message."""
-        self.message = message
-        self.status_code = status_code
-        self.headers: dict[str, str] = {}
-
-    def raise_for_status(self) -> None:
-        """Represent a successful HTTP status check."""
-        return None
-
-    def json(self) -> dict[str, Any]:
-        """Return the prepared message as a response payload."""
-        return {'message': self.message}
-
-
-class FakeCrossrefSession:
-    """Return prepared Crossref pages and record request arguments."""
-
-    def __init__(self, messages: Iterable[dict[str, Any]]) -> None:
-        """Initialize the session with prepared response messages."""
-        self.messages = iter(messages)
-        self.calls: list[dict[str, Any]] = []
-
-    def get(self, url: str, params: Mapping[str, Any], headers: Mapping[str, str],
-            timeout: float) -> FakeCrossrefResponse:
-        """Record the request and return the next prepared response."""
-        self.calls.append({'url': url, 'params': dict(params)})
-        return FakeCrossrefResponse(next(self.messages, {'items': []}))
-
-
-@contextlib.contextmanager
-def open_corpus(db_path: Path) -> Iterator[sqlite3.Connection]:
-    """Open a corpus connection that is committed and then closed."""
-    conn = corpus.connect(db_path)
-    try:
-        with conn:
-            yield conn
-    finally:
-        conn.close()
+def make_crossref_session(messages: Iterable[dict[str, Any]]) -> FakeSession:
+    """Wrap prepared successful Crossref messages, then return empty pages."""
+    responses = (FakeResponse(payload={'message': message}) for message in messages)
+    return FakeSession(chain(responses, empty_pages({'message': {'items': []}})))
 
 
 def seed_corpus(db_path: Path, papers: Iterable[Mapping[str, Any]]) -> None:
@@ -531,8 +470,8 @@ def enrich(db_path: Path, crossref_messages: Iterable[dict[str, Any]],
     dict[str, Any]
         Run summary plus both session doubles under ``crossref`` and ``openalex``.
     """
-    crossref_session = FakeCrossrefSession(crossref_messages)
-    openalex_session = FakeOpenAlexSession(FakeResponse(payload) for payload in openalex_payloads)
+    crossref_session = make_crossref_session(crossref_messages)
+    openalex_session = make_openalex_session(FakeResponse(payload=payload) for payload in openalex_payloads)
     kwargs.setdefault('sources', ['crossref', 'openalex'])
     summary = enrichment.enrich_corpus(
         db_path,
@@ -738,9 +677,9 @@ def test_enrich_corpus_isolates_a_provider_budget_error(tmp_path: Path) -> None:
     db_path = tmp_path / 'corpus.db'
     seed_corpus(db_path, [{'doi': f'10.1234/paper{index}', 'sources': 'seed'} for index in range(2)])
 
-    crossref_session = FakeCrossrefSession([{'items': [crossref_work('10.1234/paper0')]}])
-    openalex_session = FakeOpenAlexSession([FakeResponse({'results': []}),
-                                            FakeResponse({}, status_code=429)])
+    crossref_session = make_crossref_session([{'items': [crossref_work('10.1234/paper0')]}])
+    openalex_session = make_openalex_session([FakeResponse(payload={'results': []}),
+                                            FakeResponse(payload={}, status_code=429)])
 
     summary = enrichment.enrich_corpus(
         db_path, sources=['crossref', 'openalex'], email='me@example.com', api_key='', pace=0,
@@ -835,8 +774,8 @@ def test_enrich_papers_resolves_rows_merged_under_another_identifier(tmp_path: P
     db_path = tmp_path / 'corpus.db'
     seed_corpus(db_path, [{'paper_id': 'core:7', 'doi': '10.1234/example', 'sources': 'core'}])
 
-    crossref_session = FakeCrossrefSession([{'items': [crossref_work()]}])
-    openalex_session = FakeOpenAlexSession([FakeResponse({'results': [openalex_work()]})])
+    crossref_session = make_crossref_session([{'items': [crossref_work()]}])
+    openalex_session = make_openalex_session([FakeResponse(payload={'results': [openalex_work()]})])
 
     with open_corpus(db_path) as conn:
         summary = enrichment.enrich_papers(
@@ -883,7 +822,7 @@ def test_resolve_reference_dois_deduplicates_identifiers_across_papers(tmp_path:
                              'reference_rank': 0, 'referenced_openalex_id': 'W9'}],
             )
 
-    session = FakeOpenAlexSession([FakeResponse({'results': [
+    session = make_openalex_session([FakeResponse(payload={'results': [
         {'id': 'https://openalex.org/W9', 'doi': 'https://doi.org/10.1234/Cited'},
     ]})])
     updated = enrichment.resolve_reference_dois(db_path, api_key='', session=session)
@@ -1196,7 +1135,7 @@ def test_enrich_batch_preserves_child_rows_from_a_failed_provider(
         summary = enrichment._enrich_batch(
             conn, corpus.enrichment_candidates(conn), ['crossref', 'openalex'],
             'me@example.com',
-            crossref_session=FakeCrossrefSession([{'items': [crossref_work()]}]), pace=0)
+            crossref_session=make_crossref_session([{'items': [crossref_work()]}]), pace=0)
         subjects = conn.execute(
             'SELECT source, display_name FROM paper_subjects').fetchall()
         paper = corpus.paper_rows(conn)[0]

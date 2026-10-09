@@ -22,6 +22,7 @@ import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
 from typing import Any, TypeAlias
 
+from paperminertoolkit._xml import element_text as _element_text
 from paperminertoolkit.providers import base as provider
 from paperminertoolkit.corpus.metadata import clean_doi
 from paperminertoolkit.settings import load_settings
@@ -280,12 +281,10 @@ def request_json(
     """
     response = request(url, params=params, api_key=api_key, email=email,
                        session=session, timeout=timeout, attempts=attempts)
-    if response is None:
-        return None
-    try:
-        payload = response.json()
-    except ValueError as error:
-        raise RuntimeError(f'NCBI returned an undecodable JSON payload: {error}') from error
+    payload = provider.decode_payload(
+        response, label='NCBI',
+        decode_error=lambda _, error: f'NCBI returned an undecodable JSON payload: {error}',
+    )
     error_text = _error_text(payload)
     if error_text:
         raise RuntimeError(f'NCBI rejected the request: {error_text}')
@@ -333,15 +332,7 @@ def request_xml(
     """
     response = request(url, params=params, api_key=api_key, email=email,
                        session=session, timeout=timeout, attempts=attempts)
-    if response is None:
-        return None
-    text = response.text or ''
-    if not text.strip():
-        return None
-    try:
-        root = ET.fromstring(text)
-    except ET.ParseError as error:
-        raise RuntimeError(f'NCBI returned malformed XML: {error}') from error
+    root = provider.decode_xml(response, label='NCBI')
     error_text = _error_text(root)
     if error_text:
         raise RuntimeError(f'NCBI rejected the request: {error_text}')
@@ -652,27 +643,6 @@ def normalize_pmcid(value: object) -> str:
         return ''
     match = re.search(r'\d+', str(value))
     return f'PMC{match.group(0)}' if match else ''
-
-
-def _element_text(element: ET.Element | None) -> str:
-    """Flatten an element's text and inline markup into one plain string.
-
-    PubMed wraps formatting such as subscripts and italics in child elements,
-    so reading ``element.text`` alone would truncate a title at its first tag.
-
-    Parameters
-    ----------
-    element : xml.etree.ElementTree.Element or None
-        Element to flatten.
-
-    Returns
-    -------
-    str
-        Whitespace-collapsed text, or an empty string for a missing element.
-    """
-    if element is None:
-        return ''
-    return re.sub(r'\s+', ' ', ''.join(element.itertext())).strip()
 
 
 def _abstract_text(parent: ET.Element) -> str:

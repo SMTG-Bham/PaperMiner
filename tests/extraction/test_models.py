@@ -305,6 +305,12 @@ def test_anthropic_messages_client_queries_text_and_images(monkeypatch: pytest.M
         {'role': 'user', 'content': 'question'},
     ]) == 'hello world'
     assert calls[0]['url'] == 'https://anthropic.example/v1/messages'
+    assert calls[0]['headers'] == {
+        'x-api-key': config.api_key,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+    }
+    assert calls[0]['timeout'] == 120
     assert calls[0]['json']['system'] == 'system'
     assert calls[0]['json']['messages'] == [{'role': 'user', 'content': 'question'}]
     assert calls[0]['json']['temperature'] == 0.2
@@ -318,8 +324,21 @@ def test_anthropic_messages_client_queries_text_and_images(monkeypatch: pytest.M
     assert content[2]['source']['media_type'] == 'image/jpeg'
 
 
-def test_anthropic_messages_client_handles_versioned_base_url_and_error_detail(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Avoid duplicate API versions and retain Anthropic validation messages."""
+@pytest.mark.parametrize(('base_url', 'expected_url'), [
+    (None, 'https://api.anthropic.com/v1/messages'),
+    ('', 'https://api.anthropic.com/v1/messages'),
+    ('https://anthropic.example', 'https://anthropic.example/v1/messages'),
+    ('https://anthropic.example/', 'https://anthropic.example/v1/messages'),
+    ('https://anthropic.example/v1', 'https://anthropic.example/v1/messages'),
+    ('https://anthropic.example/v1/', 'https://anthropic.example/v1/messages'),
+    ('https://anthropic.example/proxy/v1/', 'https://anthropic.example/proxy/v1/messages'),
+])
+def test_anthropic_messages_client_handles_base_url_and_error_detail(
+    monkeypatch: pytest.MonkeyPatch,
+    base_url: str | None,
+    expected_url: str,
+) -> None:
+    """Preserve supported base URLs and Anthropic validation messages."""
     calls = []
 
     class ErrorResponse:
@@ -348,12 +367,12 @@ def test_anthropic_messages_client_handles_versioned_base_url_and_error_detail(m
     monkeypatch.setattr(models.requests, 'post', fake_post)
     client = models.AnthropicMessagesClient(text_config(
         provider='anthropic',
-        base_url='https://anthropic.example/v1/',
+        base_url=base_url,
     ))
 
     with pytest.raises(RuntimeError, match='invalid sampling parameters'):
         client.query([{'role': 'user', 'content': 'question'}])
-    assert calls == ['https://anthropic.example/v1/messages']
+    assert calls == [expected_url]
 
 
 def test_anthropic_messages_client_requires_key_and_wraps_errors(monkeypatch: pytest.MonkeyPatch) -> None:

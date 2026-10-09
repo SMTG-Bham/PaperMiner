@@ -7,16 +7,17 @@ configured source resolution, and corpus status updates.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, NoReturn, Self
+from typing import Any, NoReturn
 
 import pytest
 
 import paperminertoolkit.corpus.database as corpus
 import paperminertoolkit.workflows.download as download
+from tests.doubles import NullProgress
 
 
 def write_corpus(db_path: str | Path, rows: Iterable[Mapping[str, Any]]) -> None:
@@ -206,8 +207,8 @@ def test_elsevier_abstract_errors_and_invalid_asset_role(
 
 
 
-def test_json_to_text_and_elsevier_string_formatter() -> None:
-    """Read text out of a full-text payload and tidy what comes back."""
+def test_json_to_text() -> None:
+    """Read original text while rejecting structured and absent payloads."""
     assert download.elsevier.full_text({'originalText': 'paper text'}) == 'paper text'
     assert download.elsevier.full_text(
         {'full-text-retrieval-response': {'originalText': 'nested text'}}) == 'nested text'
@@ -215,9 +216,6 @@ def test_json_to_text_and_elsevier_string_formatter() -> None:
     assert download.elsevier.full_text({'originalText': {'bad': 'text'}}) == ''
     assert download.elsevier.full_text({}) == ''
     assert download.elsevier.full_text(None) == ''
-    assert download._elsevier_string_formatter('A Acknowledgements clean Acknowledgements') == ' clean '
-    assert download._elsevier_string_formatter('A References clean References') == ' clean '
-    assert download._elsevier_string_formatter('prefix amazonaws.com/key paper text') == ' paper text'
 
 
 def test_full_text_uri_and_download_text_success_and_failure(
@@ -267,6 +265,25 @@ def test_full_text_uri_and_download_text_success_and_failure(
                         lambda *_, **__: download.provider.FullTextDocument(''))
     assert download._download_text(paper, str(out_path)) is False
     assert download._download_text({'elsevier_link': ''}, str(out_path)) is False
+
+
+@pytest.mark.parametrize('downloader', [download._download_text, download._download_elsevier_text])
+def test_elsevier_text_entry_points_propagate_provider_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    downloader: Callable[[Mapping[str, Any], Path], object],
+) -> None:
+    """Both compatibility and structured entry points leave provider errors visible."""
+    def failed_document(*args: object, **kwargs: object) -> NoReturn:
+        """Simulate an Elsevier service failure before any text can be written."""
+        raise RuntimeError('service unavailable')
+
+    monkeypatch.setattr(download.elsevier, 'configured_api_key', lambda: 'key')
+    monkeypatch.setattr(download.elsevier, 'full_text_document', failed_document)
+    destination = tmp_path / 'paper.txt'
+    with pytest.raises(RuntimeError, match='service unavailable'):
+        downloader({'doi': '10.1234/example'}, destination)
+    assert not destination.exists()
 
 
 def test_download_elsevier_text_returns_native_document_and_clear_failures(
@@ -1001,25 +1018,6 @@ def test_download_papers_updates_text_and_pdf_statuses(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Download papers updates text and PDF statuses."""
-    class FakeTqdm:
-        """Provide a progress-bar test double."""
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            """Initialize the test double."""
-            return None
-
-        def __enter__(self) -> Self:
-            """Enter the test-double context."""
-            return self
-
-        def __exit__(self, *_: object) -> bool:
-            """Exit the test-double context."""
-            return False
-
-        def update(self, _: int) -> None:
-            """Ignore a progress update."""
-            return None
-
     db_path = tmp_path / 'papers.db'
     write_corpus(db_path, [{
         'paper_id': 'paper:1',
@@ -1028,7 +1026,7 @@ def test_download_papers_updates_text_and_pdf_statuses(
     }])
     monkeypatch.setattr(download, '_configured_sources', lambda _: ['unpaywall', 'elsevier'])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
-    monkeypatch.setattr(download, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(download, 'tqdm', NullProgress)
 
     def fake_download_text(
         paper: Mapping[str, Any],
@@ -1077,30 +1075,11 @@ def test_download_papers_persists_openalex_pdf_source_and_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Download papers persists OpenAlex PDF source and URL."""
-    class FakeTqdm:
-        """Provide a progress-bar test double."""
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            """Initialize the test double."""
-            return None
-
-        def __enter__(self) -> Self:
-            """Enter the test-double context."""
-            return self
-
-        def __exit__(self, *_: object) -> bool:
-            """Exit the test-double context."""
-            return False
-
-        def update(self, _: int) -> None:
-            """Ignore a progress update."""
-            return None
-
     db_path = tmp_path / 'papers.db'
     write_corpus(db_path, [{'paper_id': 'doi:10.1234/example', 'doi': '10.1234/example'}])
     monkeypatch.setattr(download, '_configured_sources', lambda _: ['openalex'])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: False)
-    monkeypatch.setattr(download, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(download, 'tqdm', NullProgress)
 
     def fake_download_pdf_from_sources(
         paper: Mapping[str, Any],
@@ -1132,30 +1111,11 @@ def test_download_papers_downloads_abstract_by_default(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Download papers downloads abstract by default."""
-    class FakeTqdm:
-        """Provide a progress-bar test double."""
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            """Initialize the test double."""
-            return None
-
-        def __enter__(self) -> Self:
-            """Enter the test-double context."""
-            return self
-
-        def __exit__(self, *_: object) -> bool:
-            """Exit the test-double context."""
-            return False
-
-        def update(self, _: int) -> None:
-            """Ignore a progress update."""
-            return None
-
     db_path = tmp_path / 'papers.db'
     write_corpus(db_path, [{'paper_id': 'paper:abstract'}])
     monkeypatch.setattr(download, '_configured_sources', lambda _: ['elsevier'])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
-    monkeypatch.setattr(download, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(download, 'tqdm', NullProgress)
     monkeypatch.setattr(download, '_download_abstract', lambda paper, sources=None: (True, 'core', 'abstract text'))
 
     download.download_papers(str(db_path), download_format='text')
@@ -1210,25 +1170,6 @@ def test_download_papers_skips_abstract_download_when_asset_already_exists(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Download papers skips abstract download when asset already exists."""
-    class FakeTqdm:
-        """Provide a progress-bar test double."""
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            """Initialize the test double."""
-            return None
-
-        def __enter__(self) -> Self:
-            """Enter the test-double context."""
-            return self
-
-        def __exit__(self, *_: object) -> bool:
-            """Exit the test-double context."""
-            return False
-
-        def update(self, _: int) -> None:
-            """Ignore a progress update."""
-            return None
-
     db_path = tmp_path / 'papers.db'
     with corpus.connect(db_path) as conn:
         corpus.add_asset(
@@ -1242,7 +1183,7 @@ def test_download_papers_skips_abstract_download_when_asset_already_exists(
         )
     monkeypatch.setattr(download, '_configured_sources', lambda _: ['elsevier'])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
-    monkeypatch.setattr(download, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(download, 'tqdm', NullProgress)
     monkeypatch.setattr(
         download,
         '_download_abstract', lambda paper, sources=None: (_ for _ in ()).throw(AssertionError('abstract should not be downloaded twice')),
@@ -1267,26 +1208,6 @@ def test_download_papers_skips_every_requested_existing_content_type(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Do not call providers for abstract, text, or PDF assets already in the corpus."""
-
-    class FakeTqdm:
-        """Provide a progress-bar test double."""
-
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            """Accept and ignore progress-bar options."""
-            return None
-
-        def __enter__(self) -> Self:
-            """Enter the progress-bar context."""
-            return self
-
-        def __exit__(self, *_: Any) -> bool:
-            """Exit the progress-bar context without suppressing errors."""
-            return False
-
-        def update(self, _: int) -> None:
-            """Ignore a progress update."""
-            return None
-
     db_path = tmp_path / 'papers.db'
     paper = {'paper_id': 'paper:complete', 'doi': '10.1234/complete'}
     with corpus.connect(db_path) as conn:
@@ -1299,7 +1220,7 @@ def test_download_papers_skips_every_requested_existing_content_type(
 
     monkeypatch.setattr(download, '_configured_sources', lambda _: ['elsevier'])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: False)
-    monkeypatch.setattr(download, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(download, 'tqdm', NullProgress)
     monkeypatch.setattr(
         download,
         '_download_abstract', lambda *_, **__: (_ for _ in ()).throw(AssertionError('abstract provider called')),
@@ -1355,26 +1276,6 @@ def test_download_papers_force_redownloads_existing_content(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The force option refreshes every requested content role despite stored assets."""
-
-    class FakeTqdm:
-        """Provide a progress-bar test double."""
-
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            """Accept and ignore progress-bar options."""
-            return None
-
-        def __enter__(self) -> Self:
-            """Enter the progress-bar context."""
-            return self
-
-        def __exit__(self, *_: Any) -> bool:
-            """Exit the progress-bar context without suppressing errors."""
-            return False
-
-        def update(self, _: int) -> None:
-            """Ignore a progress update."""
-            return None
-
     db_path = tmp_path / 'papers.db'
     paper = {'paper_id': 'paper:refresh', 'doi': '10.1234/refresh'}
     with corpus.connect(db_path) as conn:
@@ -1410,7 +1311,7 @@ def test_download_papers_force_redownloads_existing_content(
 
     monkeypatch.setattr(download, '_configured_sources', lambda _: ['openalex', 'elsevier'])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
-    monkeypatch.setattr(download, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(download, 'tqdm', NullProgress)
     monkeypatch.setattr(
         download,
         '_download_abstract', lambda *_, **__: calls.append('abstract') or (True, 'openalex', 'new abstract'),
@@ -1611,25 +1512,6 @@ def test_download_papers_records_text_and_pdf_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Download papers records text and PDF failures."""
-    class FakeTqdm:
-        """Provide a progress-bar test double."""
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            """Initialize the test double."""
-            return None
-
-        def __enter__(self) -> Self:
-            """Enter the test-double context."""
-            return self
-
-        def __exit__(self, *_: object) -> bool:
-            """Exit the test-double context."""
-            return False
-
-        def update(self, _: int) -> None:
-            """Ignore a progress update."""
-            return None
-
     db_path = tmp_path / 'papers.db'
     write_corpus(db_path, [{
         'paper_id': 'paper:1',
@@ -1638,7 +1520,7 @@ def test_download_papers_records_text_and_pdf_failures(
     }])
     monkeypatch.setattr(download, '_configured_sources', lambda _: ['unpaywall', 'elsevier'])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
-    monkeypatch.setattr(download, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(download, 'tqdm', NullProgress)
     monkeypatch.setattr(download, '_download_elsevier_text',
                         lambda *_: (False, 'Elsevier text download failed', None))
     monkeypatch.setattr(download, '_download_pdf_from_sources', lambda *_: (False, 'no pdf', ''))
@@ -1656,25 +1538,6 @@ def test_download_papers_records_initial_text_download_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Download papers records initial text download exception."""
-    class FakeTqdm:
-        """Provide a progress-bar test double."""
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            """Initialize the test double."""
-            return None
-
-        def __enter__(self) -> Self:
-            """Enter the test-double context."""
-            return self
-
-        def __exit__(self, *_: object) -> bool:
-            """Exit the test-double context."""
-            return False
-
-        def update(self, _: int) -> None:
-            """Ignore a progress update."""
-            return None
-
     db_path = tmp_path / 'papers.db'
     write_corpus(db_path, [{
         'paper_id': 'paper:text-error',
@@ -1683,7 +1546,7 @@ def test_download_papers_records_initial_text_download_exception(
     }])
     monkeypatch.setattr(download, '_configured_sources', lambda _: ['elsevier'])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
-    monkeypatch.setattr(download, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(download, 'tqdm', NullProgress)
     monkeypatch.setattr(
         download,
         '_download_elsevier_text',
@@ -1702,25 +1565,6 @@ def test_download_papers_records_download_exceptions_and_elsevier_text_after_oa_
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Download papers records download exceptions and Elsevier text after OA PDF."""
-    class FakeTqdm:
-        """Provide a progress-bar test double."""
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            """Initialize the test double."""
-            return None
-
-        def __enter__(self) -> Self:
-            """Enter the test-double context."""
-            return self
-
-        def __exit__(self, *_: object) -> bool:
-            """Exit the test-double context."""
-            return False
-
-        def update(self, _: int) -> None:
-            """Ignore a progress update."""
-            return None
-
     db_path = tmp_path / 'papers.db'
     write_corpus(db_path, [
         {'paper_id': 'paper:pdf-error', 'doi': '10.1234/pdf-error'},
@@ -1728,7 +1572,7 @@ def test_download_papers_records_download_exceptions_and_elsevier_text_after_oa_
     ])
     monkeypatch.setattr(download, '_configured_sources', lambda _: ['core', 'elsevier'])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
-    monkeypatch.setattr(download, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(download, 'tqdm', NullProgress)
 
     def fake_download_pdf_from_sources(
         paper: Mapping[str, Any],
@@ -1767,25 +1611,6 @@ def test_download_papers_downloads_elsevier_text_after_oa_pdf_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Download papers downloads Elsevier text after OA PDF success."""
-    class FakeTqdm:
-        """Provide a progress-bar test double."""
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            """Initialize the test double."""
-            return None
-
-        def __enter__(self) -> Self:
-            """Enter the test-double context."""
-            return self
-
-        def __exit__(self, *_: object) -> bool:
-            """Exit the test-double context."""
-            return False
-
-        def update(self, _: int) -> None:
-            """Ignore a progress update."""
-            return None
-
     db_path = tmp_path / 'papers.db'
     write_corpus(db_path, [{
         'paper_id': 'paper:oa-text',
@@ -1794,7 +1619,7 @@ def test_download_papers_downloads_elsevier_text_after_oa_pdf_success(
     }])
     monkeypatch.setattr(download, '_configured_sources', lambda _: ['core', 'elsevier'])
     monkeypatch.setattr(download, '_elsevier_configured', lambda: True)
-    monkeypatch.setattr(download, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(download, 'tqdm', NullProgress)
 
     def fake_download_pdf_from_sources(
         paper: Mapping[str, Any],

@@ -8,6 +8,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from urllib.parse import urlsplit
 
+from paperminertoolkit._xml import element_text as _text, local_name as _local_name
 from paperminertoolkit.corpus.layout import (
     BoundingBox,
     DocumentLayout,
@@ -26,18 +27,6 @@ _FIGURE_TAGS = {'fig', 'figure'}
 _TABLE_TAGS = {'table-wrap', 'table'}
 _GRAPHIC_TAGS = {'graphic', 'media', 'link'}
 _REFERENCE_TAGS = {'xref', 'cross-ref', 'ref'}
-
-
-def _local_name(tag: str) -> str:
-    """Return a lower-case XML name without namespace or prefix."""
-    return tag.rsplit('}', 1)[-1].rsplit(':', 1)[-1].lower()
-
-
-def _text(element: ET.Element | None) -> str:
-    """Flatten one XML subtree into normalized text."""
-    if element is None:
-        return ''
-    return ' '.join(''.join(element.itertext()).split())
 
 
 def _attribute(element: ET.Element, *names: str) -> str:
@@ -311,19 +300,62 @@ def _attach_references(
     return linked_figures, linked_tables
 
 
-def _parse_xml_layout(
-    content: str,
+def _parse_xml_root(content: str, format_name: str) -> ET.Element:
+    """Parse XML and report malformed input with its document format.
+
+    Parameters
+    ----------
+    content : str
+        XML document to parse.
+    format_name : str
+        Input format used in the error message.
+
+    Returns
+    -------
+    ET.Element
+        Parsed document root.
+
+    Raises
+    ------
+    ValueError
+        If the XML document is malformed.
+    """
+    try:
+        return ET.fromstring(content)
+    except ET.ParseError as error:
+        raise ValueError(f'malformed {format_name} document: {error}') from error
+
+
+def _layout_from_xml_root(
+    root: ET.Element,
     document_id: str,
     source: str,
     source_identifier: str,
     format_name: str,
     parser_name: str,
 ) -> DocumentLayout:
-    """Parse one supported XML vocabulary into the common layout contract."""
-    try:
-        root = ET.fromstring(content)
-    except ET.ParseError as error:
-        raise ValueError(f'malformed {format_name} document: {error}') from error
+    """Normalize a parsed XML tree into the common layout contract.
+
+    Parameters
+    ----------
+    root : ET.Element
+        Parsed root of the supported XML vocabulary.
+    document_id : str
+        Owning corpus paper identifier.
+    source : str
+        Provider or repository that supplied the document.
+    source_identifier : str
+        Provider-native document identifier.
+    format_name : str
+        Source vocabulary retained with serialized tables and provenance.
+    parser_name : str
+        Parser identifier retained in layout provenance.
+
+    Returns
+    -------
+    DocumentLayout
+        Ordered document structure with references and native coordinates.
+    """
     figures: list[Figure] = []
     tables: list[Table] = []
     _collect_objects(root, '', format_name, figures, tables)
@@ -378,8 +410,9 @@ def parse_jats_layout(
     ValueError
         If the document is not well-formed XML.
     """
-    layout = _parse_xml_layout(
-        content,
+    root = _parse_xml_root(content, 'jats')
+    layout = _layout_from_xml_root(
+        root,
         document_id,
         source,
         source_identifier,
@@ -388,7 +421,6 @@ def parse_jats_layout(
     )
     if not source_url:
         return layout
-    root = ET.fromstring(content)  # already validated well-formed above
     figures = _resolve_rxiv_graphics(layout.figures, source_url, _figure_slugs(root))
     return replace(layout, figures=figures) if figures != layout.figures else layout
 
@@ -580,15 +612,15 @@ def parse_elsevier_layout(
     ValueError
         If the document is not well-formed XML.
     """
-    layout = _parse_xml_layout(
-        content,
+    root = _parse_xml_root(content, 'elsevier-xml')
+    layout = _layout_from_xml_root(
+        root,
         document_id,
         'elsevier',
         source_identifier,
         'elsevier-xml',
         'elsevier-xml',
     )
-    root = ET.fromstring(content)  # already validated well-formed above
     eid = _text(_first_descendant(root, {'eid'}))
     figures = _resolve_elsevier_object_urls(layout.figures, eid)
     return replace(layout, figures=figures) if figures != layout.figures else layout
@@ -622,10 +654,7 @@ def parse_tei_layout(
     ValueError
         If the document is malformed or its root is not TEI.
     """
-    try:
-        root = ET.fromstring(content)
-    except ET.ParseError as error:
-        raise ValueError(f'malformed tei document: {error}') from error
+    root = _parse_xml_root(content, 'tei')
     if _local_name(root.tag) != 'tei':
         # OpenAlex serves GROBID's TEI through an HTML serialiser, which wraps
         # it in <html><body> and lower-cases every name. The names cost nothing
@@ -635,9 +664,11 @@ def parse_tei_layout(
                          if _local_name(element.tag) == 'tei'), None)
         if embedded is None:
             raise ValueError('OpenAlex GROBID content must have a TEI root element')
-        content = ET.tostring(embedded, encoding='unicode')
-    return _parse_xml_layout(
-        content,
+        # Retain the subtree serialization boundary, including the existing
+        # rejection of non-whitespace text after the embedded TEI element.
+        root = _parse_xml_root(ET.tostring(embedded, encoding='unicode'), 'tei')
+    return _layout_from_xml_root(
+        root,
         document_id,
         'openalex-grobid',
         source_identifier,

@@ -8,7 +8,6 @@ from typing import Any
 import pytest
 
 import paperminertoolkit.providers.biorxiv as biorxiv
-from paperminertoolkit.providers import base as provider, rxiv as _rxiv
 import paperminertoolkit.providers.medrxiv as medrxiv
 
 from tests.doubles import FakeResponse, FakeSession
@@ -137,10 +136,6 @@ def test_record_to_paper_reads_the_na_placeholder_as_an_absent_value() -> None:
     record = biorxiv.record_to_paper(collection()[2])
 
     assert record['published_doi'] == ''
-    assert provider.clean_text('NA') == ''
-    assert provider.clean_text('n/a') == ''
-    assert provider.clean_text(None) == ''
-    assert provider.clean_text('  spaced   out  ') == 'spaced out'
 
 
 def test_record_to_paper_flips_author_names_into_the_corpus_order() -> None:
@@ -148,11 +143,6 @@ def test_record_to_paper_flips_author_names_into_the_corpus_order() -> None:
     record = biorxiv.record_to_paper(collection()[0])
 
     assert record['authors'] == 'Z. Duan; C. E. Curtis'
-    assert _rxiv._authors('Okonkwo, N.') == 'N. Okonkwo'
-    # A name with no comma is a consortium rather than a person, and survives.
-    assert _rxiv._authors('The ENCODE Project Consortium') == (
-        'The ENCODE Project Consortium')
-    assert _rxiv._authors('') == ''
 
 
 def test_record_to_paper_builds_a_versioned_pdf_location() -> None:
@@ -239,28 +229,6 @@ def test_latest_versions_does_not_let_a_sparse_revision_blank_a_field() -> None:
     assert biorxiv.latest_versions([{'title': 'no identifier'}]) == []
 
 
-def test_total_results_and_page_size_read_the_message_block() -> None:
-    """Read the record count and page length bioRxiv reports alongside a page."""
-    payload = json.loads(interval_payload(total=1281))
-    assert biorxiv.total_results(payload) == 1281
-    assert biorxiv.page_size(payload) == 5
-    assert biorxiv.total_results(None) == 0
-    assert biorxiv.total_results(json.loads(empty_payload())) == 0
-    # A payload reporting no usable length falls back rather than stepping zero.
-    assert biorxiv.page_size(json.loads(empty_payload()), default=30) == 30
-    assert biorxiv.page_size(None) == biorxiv.PAGE_SIZE
-
-
-def test_page_cursors_walks_pages_from_the_last_one_back_to_zero() -> None:
-    """Start at the final page so the newest postings are read first."""
-    assert list(biorxiv.page_cursors(1281, 100)) == list(range(1200, -1, -100))
-    assert list(biorxiv.page_cursors(250, 30)) == list(range(240, -1, -30))
-    # An exact multiple must not produce an empty page past the end.
-    assert list(biorxiv.page_cursors(200, 100)) == [100, 0]
-    assert list(biorxiv.page_cursors(1, 100)) == [0]
-    assert list(biorxiv.page_cursors(0, 100)) == []
-
-
 def test_normalize_biorxiv_doi_accepts_both_prefixes_urls_and_versions() -> None:
     """Reduce every identifier presentation to one bare, unversioned DOI."""
     assert biorxiv.normalize_biorxiv_doi('10.1101/2023.12.01.569634v2') == (
@@ -333,75 +301,6 @@ def test_biorxiv_version_reads_the_suffix_when_one_is_present() -> None:
     assert biorxiv.biorxiv_version(None) == ''
 
 
-def test_endpoint_trades_page_width_for_the_category_filter() -> None:
-    """Address the filtering host only when a category is actually wanted."""
-    assert biorxiv.endpoint() == (biorxiv.BASE_URL, biorxiv.PAGE_SIZE)
-    assert biorxiv.endpoint('  ') == (biorxiv.BASE_URL, biorxiv.PAGE_SIZE)
-    assert biorxiv.endpoint('neuroscience') == (biorxiv.CATEGORY_BASE_URL,
-                                                biorxiv.CATEGORY_PAGE_SIZE)
-    # The wider host is the one named for the other archive; the server segment
-    # of the path, not the host, is what selects bioRxiv's content.
-    assert biorxiv.BASE_URL != biorxiv.CATEGORY_BASE_URL
-
-
-def test_interval_url_rejects_a_bound_that_is_not_an_iso_date() -> None:
-    """Refuse a malformed interval here rather than spending a request on it."""
-    assert biorxiv.interval_url('2024-01-01', '2024-12-31', 200) == (
-        f'{biorxiv.BASE_URL}/details/biorxiv/2024-01-01/2024-12-31/200/json')
-    assert biorxiv.interval_url('2024-01-01', '2024-12-31', -5).endswith('/0/json')
-    with pytest.raises(ValueError, match='start_date must be an ISO date'):
-        biorxiv.interval_url('last week', '2024-12-31')
-    with pytest.raises(ValueError, match='end_date must be an ISO date'):
-        biorxiv.interval_url('2024-01-01', '')
-
-
-
-
-
-
-
-def test_request_json_reads_an_absent_record_out_of_a_200_response() -> None:
-    """Treat the statuses that mean "nothing here" as an empty result."""
-    for status in ['no posts found', 'DOI not recognizable']:
-        session = FakeSession([FakeResponse(text=empty_payload(status))])
-        assert biorxiv.request_json(biorxiv.BASE_URL, session=session) is None
-
-
-def test_request_json_raises_on_a_rejection_dressed_as_a_200_response() -> None:
-    """Detect a rejected request that arrives with a successful status code."""
-    session = FakeSession([FakeResponse(text=empty_payload('Both dates must be in yyyy-mm-dd'))])
-    with pytest.raises(RuntimeError, match='Both dates must be in yyyy-mm-dd'):
-        biorxiv.request_json(biorxiv.BASE_URL, session=session)
-
-
-def test_request_json_reports_malformed_and_unexpected_bodies() -> None:
-    """Raise on a body that is not the JSON object the API documents."""
-    session = FakeSession([FakeResponse(text='{broken')])
-    with pytest.raises(RuntimeError, match='bioRxiv returned malformed JSON'):
-        biorxiv.request_json(biorxiv.BASE_URL, session=session)
-
-    session = FakeSession([FakeResponse(text='[1, 2, 3]')])
-    with pytest.raises(RuntimeError, match='unexpected payload of type list'):
-        biorxiv.request_json(biorxiv.BASE_URL, session=session)
-
-
-def test_interval_page_sends_the_category_to_the_host_that_applies_it() -> None:
-    """Address the filtering host and pass the category it needs."""
-    session = FakeSession([FakeResponse(text=interval_payload())])
-    biorxiv.interval_page('2024-01-01', '2024-12-31', cursor=60, category='Neuroscience',
-                          session=session)
-
-    assert session.calls[0]['url'] == (
-        f'{biorxiv.CATEGORY_BASE_URL}/details/biorxiv/2024-01-01/2024-12-31/60/json')
-    assert session.calls[0]['params'] == {'category': 'Neuroscience'}
-    assert session.calls[0]['headers']['User-Agent'] == provider.USER_AGENT
-
-    session = FakeSession([FakeResponse(text=interval_payload())])
-    biorxiv.interval_page('2024-01-01', '2024-12-31', session=session)
-    assert session.calls[0]['url'].startswith(biorxiv.BASE_URL)
-    assert session.calls[0]['params'] == {}
-
-
 def test_details_requests_every_version_and_skips_an_unusable_doi() -> None:
     """Ask for the full version history, and make no request without a DOI."""
     session = FakeSession([FakeResponse(text=interval_payload())])
@@ -453,76 +352,6 @@ def test_resolve_biorxiv_doi_reads_stored_values_without_a_request() -> None:
         {'medrxiv_doi': '10.1101/2024.03.01.24303596',
          'doi': '10.1101/2024.03.01.24303596'}) == ''
     assert biorxiv.resolve_biorxiv_doi({}) == ''
-
-
-def test_full_text_flattens_the_jats_document_biorxiv_publishes() -> None:
-    """Return the article title and prose, skipping tables and references."""
-    jats = ('<article><front><article-meta><title-group>'
-            '<article-title>Visual working memories</article-title>'
-            '</title-group></article-meta></front><body>'
-            '<sec><title>Results</title><p>Decoding tracked the aperture edges.</p>'
-            '<table-wrap><p>Table residue</p></table-wrap></sec>'
-            '<sec><title>Discussion</title><p>Memories are abstractions.</p></sec>'
-            '</body><back><ref-list><ref><p>A citation</p></ref></ref-list></back></article>')
-    session = FakeSession([FakeResponse(text=jats)])
-    text = biorxiv.full_text({'jatsxml': 'https://www.biorxiv.org/x.source.xml'}, session=session)
-
-    assert text.startswith('Visual working memories')
-    assert 'Decoding tracked the aperture edges.' in text
-    assert 'Memories are abstractions.' in text
-    assert 'Table residue' not in text
-    assert 'A citation' not in text
-
-    session = FakeSession([FakeResponse(text=jats)])
-    document = biorxiv.full_text_document(
-        {'biorxiv_doi': '10.1101/x',
-         'jatsxml': 'https://www.biorxiv.org/x.source.xml'},
-        session=session,
-    )
-    assert document.content == jats
-    assert document.document_format == 'jats'
-    assert document.source_identifier == '10.1101/x'
-    assert len(session.calls) == 1
-
-
-def test_full_text_reports_a_broken_document_and_skips_an_absent_one() -> None:
-    """Raise on unparseable JATS but treat a bodyless record as no text."""
-    session = FakeSession([])
-    assert biorxiv.full_text({}, session=session) == ''
-    assert session.calls == []
-
-    session = FakeSession([FakeResponse(text='<article')])
-    with pytest.raises(RuntimeError, match='bioRxiv returned malformed JATS XML'):
-        biorxiv.full_text({'jatsxml': 'https://www.biorxiv.org/x.source.xml'}, session=session)
-
-    session = FakeSession([FakeResponse(text='<article><front/></article>')])
-    assert biorxiv.full_text({'jatsxml': 'https://www.biorxiv.org/x.source.xml'},
-                             session=session) == ''
-
-    session = FakeSession([FakeResponse(text='   ')])
-    assert biorxiv.full_text({'jatsxml': 'https://www.biorxiv.org/x.source.xml'},
-                             session=session) == ''
-
-
-def test_parse_query_lifts_the_scope_terms_out_of_the_phrase() -> None:
-    """Separate the walk's bounds from the words that have to match."""
-    terms, scope = biorxiv.parse_query(
-        '"gene regulation" enhancer category:"Developmental Biology" '
-        'from:2024-01-01 to:2024-06-30')
-
-    assert terms == ['gene regulation', 'enhancer']
-    assert scope == {'category': 'Developmental Biology', 'from': '2024-01-01',
-                     'to': '2024-06-30'}
-    assert biorxiv.parse_query('CATEGORY:genomics') == ([], {'category': 'genomics'})
-    assert biorxiv.parse_query('   ') == ([], {})
-
-
-def test_parse_query_rejects_a_bound_that_is_not_an_iso_date() -> None:
-    """Refuse a date the interval endpoint would reject anyway."""
-    with pytest.raises(ValueError, match='from: must be an ISO date'):
-        biorxiv.parse_query('crispr from:last-year')
-    with pytest.raises(ValueError, match='to: must be an ISO date'):
-        biorxiv.parse_query('crispr to:2024')
 
 
 def test_matches_combines_terms_with_and_across_the_record_text() -> None:

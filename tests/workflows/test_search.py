@@ -10,7 +10,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Mapping
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import Any, NoReturn, Self
 
 import pandas as pd
@@ -18,6 +18,7 @@ import pytest
 
 import paperminertoolkit.corpus.database as corpus
 import paperminertoolkit.workflows.search as search
+from tests.doubles import NullProgress
 
 
 def test_empty_pages_blank_abstracts_and_nonstandard_links_are_safe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -163,28 +164,9 @@ def test_document_search_stops_when_next_link_is_missing(monkeypatch: pytest.Mon
             }
         }
 
-    class FakeTqdm:
-        """Provide a progress-bar test double."""
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            """Initialize the test double."""
-            return None
-
-        def __enter__(self) -> Self:
-            """Enter the test-double context."""
-            return self
-
-        def __exit__(self, *_: object) -> bool:
-            """Exit the test-double context."""
-            return False
-
-        def update(self, _: int) -> None:
-            """Ignore a progress update."""
-            return None
-
     monkeypatch.setattr(search.elsevier, 'configured_api_key', lambda *_: 'elsevier-key')
     monkeypatch.setattr(search.elsevier, 'request_json', fake_request_json)
-    monkeypatch.setattr(search, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(search, 'tqdm', NullProgress)
 
     results = search._document_search('solid electrolyte', count=3, get_all=True)
 
@@ -217,28 +199,9 @@ def test_document_search_stops_non_scopus_searches_at_provider_limit(monkeypatch
             }
         }
 
-    class FakeTqdm:
-        """Provide a progress-bar test double."""
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            """Initialize the test double."""
-            return None
-
-        def __enter__(self) -> Self:
-            """Enter the test-double context."""
-            return self
-
-        def __exit__(self, *_: object) -> bool:
-            """Exit the test-double context."""
-            return False
-
-        def update(self, _: int) -> None:
-            """Ignore a progress update."""
-            return None
-
     monkeypatch.setattr(search.elsevier, 'configured_api_key', lambda *_: 'elsevier-key')
     monkeypatch.setattr(search.elsevier, 'request_json', fake_request_json)
-    monkeypatch.setattr(search, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(search, 'tqdm', NullProgress)
 
     results = search._document_search('solid electrolyte', index='article', count=6000, get_all=True)
 
@@ -327,67 +290,6 @@ def test_core_rows_normalizes_work_records() -> None:
     assert rows.loc[1, 'paper_id'] == 'doi:10.1234/no-id'
 
 
-class FakeSearchTqdm:
-    """Progress-bar test double that renders nothing."""
-
-    def __init__(self, *args: object, **kwargs: object) -> None:
-        """Accept and ignore the progress-bar arguments.
-
-        Parameters
-        ----------
-        *args : object
-            Positional arguments, unused.
-        **kwargs : object
-            Keyword arguments, unused.
-
-        Returns
-        -------
-        None
-            The double is initialized in place.
-        """
-        return None
-
-    def __enter__(self) -> 'FakeSearchTqdm':
-        """Enter the test-double context.
-
-        Returns
-        -------
-        FakeSearchTqdm
-            This double.
-        """
-        return self
-
-    def __exit__(self, *_: object) -> bool:
-        """Exit the test-double context.
-
-        Parameters
-        ----------
-        *_ : object
-            Exception details, unused.
-
-        Returns
-        -------
-        bool
-            False, so any exception propagates.
-        """
-        return False
-
-    def update(self, _: int) -> None:
-        """Ignore a progress update.
-
-        Parameters
-        ----------
-        _ : int
-            Completed units, unused.
-
-        Returns
-        -------
-        None
-            Nothing is recorded.
-        """
-        return None
-
-
 def test_core_search_paginates_and_stops_at_total_hits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -422,7 +324,7 @@ def test_core_search_paginates_and_stops_at_total_hits(
 
     monkeypatch.setattr(search.core, 'search_page', fake_search_page)
     monkeypatch.setattr(search.core, 'configured_api_key', lambda: None)
-    monkeypatch.setattr(search, 'tqdm', FakeSearchTqdm)
+    monkeypatch.setattr(search, 'tqdm', NullProgress)
 
     rows = search.core_search('solid electrolyte', count=101)
 
@@ -439,7 +341,7 @@ def test_core_search_stops_when_no_results(monkeypatch: pytest.MonkeyPatch) -> N
     """Stop at an empty page rather than walking past the end of the results."""
     monkeypatch.setattr(search.core, 'search_page', lambda *_, **__: {'results': []})
     monkeypatch.setattr(search.core, 'configured_api_key', lambda: None)
-    monkeypatch.setattr(search, 'tqdm', FakeSearchTqdm)
+    monkeypatch.setattr(search, 'tqdm', NullProgress)
 
     assert search.core_search('nothing matches', count=50).empty
 
@@ -450,32 +352,13 @@ def test_core_search_stops_when_page_is_short(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(search.core, 'search_page',
                         lambda *_, **__: pages.pop(0) if pages else {})
     monkeypatch.setattr(search.core, 'configured_api_key', lambda: None)
-    monkeypatch.setattr(search, 'tqdm', FakeSearchTqdm)
+    monkeypatch.setattr(search, 'tqdm', NullProgress)
 
     assert len(search.core_search('solid electrolyte', count=100)) == 3
 
 
 def test_openalex_search_paginates_with_cursor_and_stops_at_count(monkeypatch: pytest.MonkeyPatch) -> None:
     """OpenAlex search paginates with cursor and stops at count."""
-    class FakeTqdm:
-        """Provide a progress-bar test double."""
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            """Initialize the test double."""
-            return None
-
-        def __enter__(self) -> Self:
-            """Enter the test-double context."""
-            return self
-
-        def __exit__(self, *_: object) -> bool:
-            """Exit the test-double context."""
-            return False
-
-        def update(self, _: int) -> None:
-            """Ignore a progress update."""
-            return None
-
     calls = []
 
     first_page = [{'id': f'https://openalex.org/W{index}', 'title': f'paper {index}'} for index in range(200)]
@@ -495,7 +378,7 @@ def test_openalex_search_paginates_with_cursor_and_stops_at_count(monkeypatch: p
 
     monkeypatch.setattr(search.openalex, 'request_json', fake_request_json)
     monkeypatch.setattr(search.openalex, 'configured_api_key', lambda: 'oa-key')
-    monkeypatch.setattr(search, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(search, 'tqdm', NullProgress)
 
     rows = search.openalex_search('solid electrolyte', count=201)
 
@@ -514,25 +397,6 @@ def test_openalex_search_paginates_with_cursor_and_stops_at_count(monkeypatch: p
 
 def test_openalex_search_stops_without_next_cursor_and_omits_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """OpenAlex search stops without next cursor and omits API key."""
-    class FakeTqdm:
-        """Provide a progress-bar test double."""
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            """Initialize the test double."""
-            return None
-
-        def __enter__(self) -> Self:
-            """Enter the test-double context."""
-            return self
-
-        def __exit__(self, *_: object) -> bool:
-            """Exit the test-double context."""
-            return False
-
-        def update(self, _: int) -> None:
-            """Ignore a progress update."""
-            return None
-
     calls = []
 
     def fake_request_json(
@@ -547,7 +411,7 @@ def test_openalex_search_stops_without_next_cursor_and_omits_api_key(monkeypatch
 
     monkeypatch.setattr(search.openalex, 'request_json', fake_request_json)
     monkeypatch.setattr(search.openalex, 'configured_api_key', lambda: None)
-    monkeypatch.setattr(search, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(search, 'tqdm', NullProgress)
 
     rows = search.openalex_search('query', count=50)
 
@@ -1057,25 +921,6 @@ def test_pubmed_rows_normalize_records_and_clean_abstracts() -> None:
 
 def test_pubmed_search_pages_efetch_and_stops_at_count(monkeypatch: pytest.MonkeyPatch) -> None:
     """Page a stored result set and stop once the requested count is reached."""
-    class FakeTqdm:
-        """Provide a progress-bar test double."""
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            """Initialize the test double."""
-            return None
-
-        def __enter__(self) -> Self:
-            """Enter the test-double context."""
-            return self
-
-        def __exit__(self, *_: object) -> bool:
-            """Exit the test-double context."""
-            return False
-
-        def update(self, _: int) -> None:
-            """Ignore a progress update."""
-            return None
-
     pages = []
 
     def fake_esearch_history(query: str, **kwargs: Any) -> tuple[str, str, int]:
@@ -1098,7 +943,7 @@ def test_pubmed_search_pages_efetch_and_stops_at_count(monkeypatch: pytest.Monke
     monkeypatch.setattr(search.pubmed, 'parse_articles', fake_parse_articles)
     monkeypatch.setattr(search.pubmed, 'configured_api_key', lambda *_, **__: None)
     monkeypatch.setattr(search.pubmed, 'configured_email', lambda *_, **__: '')
-    monkeypatch.setattr(search, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(search, 'tqdm', NullProgress)
 
     rows = search.pubmed_search('lithium', count=250)
 
@@ -1335,10 +1180,11 @@ def medrxiv_records(count: int, start: int = 0, version: str = '1',
              'sources': 'medrxiv'} for index in range(count)]
 
 
-def stub_medrxiv_walk(monkeypatch: pytest.MonkeyPatch,
-                      pages: list[list[dict[str, Any]]],
-                      total: int | None = None,
-                      step: int = 100) -> list[dict[str, Any]]:
+def stub_rxiv_walk(monkeypatch: pytest.MonkeyPatch,
+                   provider: ModuleType,
+                   pages: list[list[dict[str, Any]]],
+                   total: int | None = None,
+                   step: int = 100) -> list[dict[str, Any]]:
     """Serve prepared interval pages and record the cursors requested.
 
     Pages are indexed by cursor so a walk that revisits the first page reads
@@ -1354,12 +1200,12 @@ def stub_medrxiv_walk(monkeypatch: pytest.MonkeyPatch,
         calls.append({'start': start, 'end': end, 'cursor': cursor, 'category': category})
         return {'cursor': cursor}
 
-    monkeypatch.setattr(search.medrxiv, 'interval_page', fake_interval_page)
-    monkeypatch.setattr(search.medrxiv, 'parse_records',
+    monkeypatch.setattr(provider, 'interval_page', fake_interval_page)
+    monkeypatch.setattr(provider, 'parse_records',
                         lambda payload: by_cursor.get(payload['cursor'], []))
-    monkeypatch.setattr(search.medrxiv, 'total_results',
+    monkeypatch.setattr(provider, 'total_results',
                         lambda _: total if total is not None else step * len(pages))
-    monkeypatch.setattr(search.medrxiv, 'page_size', lambda *_, **__: step)
+    monkeypatch.setattr(provider, 'page_size', lambda *_, **__: step)
     return calls
 
 
@@ -1379,7 +1225,7 @@ def test_medrxiv_search_walks_pages_newest_first_and_stops_at_count(
 ) -> None:
     """Read the last page first and stop once the requested count matches."""
     pages = [medrxiv_records(2, start=index * 2) for index in range(4)]
-    calls = stub_medrxiv_walk(monkeypatch, pages, total=400)
+    calls = stub_rxiv_walk(monkeypatch, search.medrxiv, pages, total=400)
 
     rows = search.medrxiv_search('vaccines from:2024-01-01 to:2024-12-31', count=3)
 
@@ -1394,7 +1240,7 @@ def test_medrxiv_search_reuses_the_page_it_fetched_to_learn_the_total(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Spend one request on the first page rather than fetching it twice."""
-    calls = stub_medrxiv_walk(monkeypatch, [medrxiv_records(2)], total=2)
+    calls = stub_rxiv_walk(monkeypatch, search.medrxiv, [medrxiv_records(2)], total=2)
 
     rows = search.medrxiv_search('vaccines', count=50)
 
@@ -1408,7 +1254,7 @@ def test_medrxiv_search_collapses_versions_that_fall_on_different_pages(
     """Count a revised preprint once even when its postings are pages apart."""
     pages = [medrxiv_records(1, version='1', date='2024-01-05'),
              medrxiv_records(1, version='2', date='2024-06-05')]
-    stub_medrxiv_walk(monkeypatch, pages, total=200)
+    stub_rxiv_walk(monkeypatch, search.medrxiv, pages, total=200)
 
     rows = search.medrxiv_search('vaccines', count=5)
 
@@ -1421,7 +1267,7 @@ def test_medrxiv_search_applies_the_scope_terms_to_the_walk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Send the interval and category the query named to the API."""
-    calls = stub_medrxiv_walk(monkeypatch, [medrxiv_records(1)], total=1, step=30)
+    calls = stub_rxiv_walk(monkeypatch, search.medrxiv, [medrxiv_records(1)], total=1, step=30)
 
     search.medrxiv_search('vaccines category:"Infectious Diseases" from:2024-02-01 to:2024-02-29',
                           count=1)
@@ -1434,7 +1280,7 @@ def test_medrxiv_search_defaults_the_interval_to_the_whole_archive(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Read from the first medRxiv posting to today when the query says nothing."""
-    calls = stub_medrxiv_walk(monkeypatch, [medrxiv_records(1)], total=1)
+    calls = stub_rxiv_walk(monkeypatch, search.medrxiv, [medrxiv_records(1)], total=1)
 
     search.medrxiv_search('vaccines', count=1, today='2026-08-22')
 
@@ -1447,7 +1293,7 @@ def test_medrxiv_search_matches_terms_rather_than_returning_the_archive(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Keep only the postings that carry every term of the query."""
-    stub_medrxiv_walk(monkeypatch, [medrxiv_records(3)], total=3)
+    stub_rxiv_walk(monkeypatch, search.medrxiv, [medrxiv_records(3)], total=3)
 
     assert len(search.medrxiv_search('vaccines', count=10)) == 3
     assert search.medrxiv_search('lithium electrolyte', count=10).empty
@@ -1460,7 +1306,7 @@ def test_medrxiv_search_stops_at_the_scan_limit_and_reports_the_shortfall(
     """End a fruitless walk at the scan limit instead of reading the archive."""
     monkeypatch.setattr(search.medrxiv, 'MAX_SCAN_RECORDS', 200)
     pages = [medrxiv_records(100, start=index * 100) for index in range(10)]
-    calls = stub_medrxiv_walk(monkeypatch, pages, total=1000)
+    calls = stub_rxiv_walk(monkeypatch, search.medrxiv, pages, total=1000)
 
     rows = search.medrxiv_search('lithium', count=5)
 
@@ -1478,7 +1324,7 @@ def test_medrxiv_search_announces_the_scan_before_it_starts(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Say how much is about to be read rather than appearing to hang."""
-    stub_medrxiv_walk(monkeypatch, [medrxiv_records(1)], total=1)
+    stub_rxiv_walk(monkeypatch, search.medrxiv, [medrxiv_records(1)], total=1)
 
     search.medrxiv_search('vaccines category:oncology from:2024-01-01 to:2024-12-31', count=1)
 
@@ -1493,7 +1339,7 @@ def test_medrxiv_search_returns_no_rows_for_an_empty_or_unmatched_archive(
     """Skip the walk when the count is zero or the interval holds nothing."""
     assert search.medrxiv_search('vaccines', count=0).empty
 
-    stub_medrxiv_walk(monkeypatch, [], total=0)
+    stub_rxiv_walk(monkeypatch, search.medrxiv, [], total=0)
     assert search.medrxiv_search('vaccines', count=10).empty
 
 
@@ -1550,29 +1396,6 @@ def biorxiv_records(count: int, start: int = 0, version: str = '1',
              'sources': 'biorxiv'} for index in range(count)]
 
 
-def stub_biorxiv_walk(monkeypatch: pytest.MonkeyPatch,
-                      pages: list[list[dict[str, Any]]],
-                      total: int | None = None,
-                      step: int = 100) -> list[dict[str, Any]]:
-    """Serve prepared bioRxiv interval pages and record the cursors requested."""
-    calls: list[dict[str, Any]] = []
-    by_cursor = {index * step: page for index, page in enumerate(pages)}
-
-    def fake_interval_page(start: str, end: str, cursor: int = 0,
-                           category: str = '', **_: Any) -> object:
-        """Record the requested window and return a page marker."""
-        calls.append({'start': start, 'end': end, 'cursor': cursor, 'category': category})
-        return {'cursor': cursor}
-
-    monkeypatch.setattr(search.biorxiv, 'interval_page', fake_interval_page)
-    monkeypatch.setattr(search.biorxiv, 'parse_records',
-                        lambda payload: by_cursor.get(payload['cursor'], []))
-    monkeypatch.setattr(search.biorxiv, 'total_results',
-                        lambda _: total if total is not None else step * len(pages))
-    monkeypatch.setattr(search.biorxiv, 'page_size', lambda *_, **__: step)
-    return calls
-
-
 def test_biorxiv_rows_normalize_records_and_clean_abstracts() -> None:
     """Frame bioRxiv records on the search schema with compacted abstracts."""
     rows = search._biorxiv_rows(biorxiv_records(2))
@@ -1589,7 +1412,7 @@ def test_biorxiv_search_walks_pages_newest_first_and_stops_at_count(
 ) -> None:
     """Read the last page first and stop once the requested count matches."""
     pages = [biorxiv_records(2, start=index * 2) for index in range(4)]
-    calls = stub_biorxiv_walk(monkeypatch, pages, total=400)
+    calls = stub_rxiv_walk(monkeypatch, search.biorxiv, pages, total=400)
 
     rows = search.biorxiv_search('genomes from:2024-01-01 to:2024-12-31', count=3)
 
@@ -1606,7 +1429,7 @@ def test_biorxiv_search_collapses_versions_that_fall_on_different_pages(
     """Count a revised preprint once even when its postings are pages apart."""
     pages = [biorxiv_records(1, version='1', date='2024-01-05'),
              biorxiv_records(1, version='2', date='2024-06-05')]
-    stub_biorxiv_walk(monkeypatch, pages, total=200)
+    stub_rxiv_walk(monkeypatch, search.biorxiv, pages, total=200)
 
     rows = search.biorxiv_search('genomes', count=5)
 
@@ -1623,7 +1446,7 @@ def test_biorxiv_search_defaults_the_interval_to_the_whole_archive(
     bioRxiv opened in 2013, six years before medRxiv, so the unscoped walk it
     defaults to is the longer of the two by a wide margin.
     """
-    calls = stub_biorxiv_walk(monkeypatch, [biorxiv_records(1)], total=1)
+    calls = stub_rxiv_walk(monkeypatch, search.biorxiv, [biorxiv_records(1)], total=1)
 
     search.biorxiv_search('genomes', count=1, today='2026-08-22')
 
@@ -1636,7 +1459,7 @@ def test_biorxiv_search_applies_the_scope_terms_to_the_walk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Send the interval and category the query named to the API."""
-    calls = stub_biorxiv_walk(monkeypatch, [biorxiv_records(1)], total=1, step=30)
+    calls = stub_rxiv_walk(monkeypatch, search.biorxiv, [biorxiv_records(1)], total=1, step=30)
 
     search.biorxiv_search('genomes category:"Developmental Biology" '
                           'from:2024-02-01 to:2024-02-29', count=1)
@@ -1658,7 +1481,7 @@ def test_biorxiv_search_reads_biorxiv_rather_than_medrxiv(
         raise AssertionError('a bioRxiv search must not read the medRxiv archive')
 
     monkeypatch.setattr(search.medrxiv, 'interval_page', unreachable)
-    stub_biorxiv_walk(monkeypatch, [biorxiv_records(1)], total=1)
+    stub_rxiv_walk(monkeypatch, search.biorxiv, [biorxiv_records(1)], total=1)
 
     rows = search.biorxiv_search('genomes', count=1)
 
@@ -1672,7 +1495,7 @@ def test_biorxiv_search_stops_at_the_scan_limit_and_reports_the_shortfall(
     """End a fruitless walk at the scan limit instead of reading the archive."""
     monkeypatch.setattr(search.biorxiv, 'MAX_SCAN_RECORDS', 200)
     pages = [biorxiv_records(100, start=index * 100) for index in range(10)]
-    calls = stub_biorxiv_walk(monkeypatch, pages, total=1000)
+    calls = stub_rxiv_walk(monkeypatch, search.biorxiv, pages, total=1000)
 
     rows = search.biorxiv_search('lithium', count=5)
 
@@ -1690,7 +1513,7 @@ def test_biorxiv_search_announces_the_scan_before_it_starts(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Say how much is about to be read rather than appearing to hang."""
-    stub_biorxiv_walk(monkeypatch, [biorxiv_records(1)], total=1)
+    stub_rxiv_walk(monkeypatch, search.biorxiv, [biorxiv_records(1)], total=1)
 
     search.biorxiv_search('genomes category:genomics from:2024-01-01 to:2024-12-31', count=1)
 
@@ -1705,7 +1528,7 @@ def test_biorxiv_search_returns_no_rows_for_an_empty_or_unmatched_archive(
     """Skip the walk when the count is zero or the interval holds nothing."""
     assert search.biorxiv_search('genomes', count=0).empty
 
-    stub_biorxiv_walk(monkeypatch, [], total=0)
+    stub_rxiv_walk(monkeypatch, search.biorxiv, [], total=0)
     assert search.biorxiv_search('genomes', count=10).empty
 
 

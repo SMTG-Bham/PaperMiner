@@ -15,6 +15,12 @@ import paperminertoolkit.workflows.validation as validation_workflow
 from paperminertoolkit.workflows.validation import ReviewApp
 
 
+@pytest.fixture(autouse=True)
+def isolated_review_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep review snapshots and saved-review discovery inside the test directory."""
+    monkeypatch.setattr(validation_workflow, 'REVIEW_DIR', tmp_path / 'reviews')
+
+
 def _csv(headers: list[str], rows: list[list[str]]) -> str:
     """Build a tiny CSV fixture without temporary files."""
     text = io.StringIO()
@@ -155,3 +161,43 @@ def test_validate_cli_preloads_inputs_and_opens_server(tmp_path: Path, monkeypat
     assert result.exit_code == 0, result.output
     assert called['app'].session['validation']
     assert called['open_browser'] is False
+
+
+@pytest.mark.parametrize('failure', ['serialization', 'replace'])
+def test_failed_review_save_preserves_file_state_and_cleans_temporary_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    """Keep both saved decisions and application state when an atomic write fails."""
+    path = tmp_path / 'review.json'
+    app = ReviewApp(output=path)
+    app.load(_gold(), _scraped(), 'band_gap_validation')
+    initial = {'comment': 'café'}
+    app.save(initial)
+    before = path.read_bytes()
+    candidate: dict[str, object] = {'comment': 'changed'}
+    if failure == 'serialization':
+        candidate['invalid'] = object()
+        error = TypeError
+    else:
+        def fail_replace(source: str, destination: Path) -> None:
+            """Simulate a filesystem failure at the final replacement boundary."""
+            raise OSError('replace failed')
+
+        monkeypatch.setattr(validation_workflow.os, 'replace', fail_replace)
+        error = OSError
+    with pytest.raises(error):
+        app.save(candidate)
+    assert path.read_bytes() == before
+    assert app.decisions == initial
+    assert app.session['decisions'] == initial
+    assert not list(tmp_path.rglob('*.tmp'))
+
+
+def test_snapshot_serialization_failure_cleans_temporary_file(tmp_path: Path) -> None:
+    """Leave no half-written input snapshot after JSON serialization fails."""
+    app = ReviewApp()
+    app.input_snapshot = {'fingerprint': 'test', 'invalid': object()}
+    with pytest.raises(TypeError):
+        app._save_input_snapshot()
+    assert not list(tmp_path.rglob('*.tmp'))
+    assert not list(tmp_path.rglob('*.inputs.json'))

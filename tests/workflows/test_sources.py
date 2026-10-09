@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,6 +15,53 @@ import paperminertoolkit.workflows.download as download
 import paperminertoolkit.workflows.enrichment as enrichment
 import paperminertoolkit.workflows.search as search
 from paperminertoolkit.providers import registry as sources
+
+
+@pytest.mark.parametrize(('attribute', 'resolve'), [
+    ('search_handler', lambda name: sources.resolve_handler(name, sources.SEARCH)),
+    ('probe', sources.resolve_probe),
+    ('text_reachable', lambda name: sources.resolve_reachability(name, sources.TEXT)),
+])
+def test_registry_resolution_observes_replaced_callables(
+    monkeypatch: pytest.MonkeyPatch,
+    attribute: str,
+    resolve: Callable[[str], object],
+) -> None:
+    """Keep dynamic handlers, probes, and predicates replaceable after import."""
+    first, second = (lambda: 'first'), (lambda: 'second')
+    module = SimpleNamespace(operation=first)
+    entry = replace(sources.SOURCES['arxiv'], **{attribute: 'fake.module:operation'})
+    monkeypatch.setitem(sources.SOURCES, 'arxiv', entry)
+    monkeypatch.setattr(sources.importlib, 'import_module', lambda _: module)
+
+    assert resolve('arxiv') is first
+    module.operation = second
+    assert resolve('arxiv') is second
+
+
+@pytest.mark.parametrize('target', ['missing-separator', ':operation', 'fake.module:'])
+@pytest.mark.parametrize(('attribute', 'resolve', 'description'), [
+    ('search_handler', lambda name: sources.resolve_handler(name, sources.SEARCH),
+     'search handler'),
+    ('probe', sources.resolve_probe, 'probe'),
+    ('text_reachable', lambda name: sources.resolve_reachability(name, sources.TEXT),
+     'text reachability predicate'),
+])
+def test_registry_rejects_incomplete_targets_with_their_role(
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+    attribute: str,
+    resolve: Callable[[str], object],
+    description: str,
+) -> None:
+    """Preserve role-specific errors for each malformed target component."""
+    entry = replace(sources.SOURCES['arxiv'], **{attribute: target})
+    monkeypatch.setitem(sources.SOURCES, 'arxiv', entry)
+
+    with pytest.raises(ValueError) as failure:
+        resolve('arxiv')
+
+    assert str(failure.value) == f'invalid {description} for arxiv: {target!r}'
 
 
 def test_registry_rejects_invalid_dynamic_targets(monkeypatch: pytest.MonkeyPatch) -> None:

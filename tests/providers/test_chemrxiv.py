@@ -346,6 +346,22 @@ def test_latest_versions_does_not_let_a_sparse_revision_blank_a_field() -> None:
     assert collapsed[0]['abstract'] == 'First posting.'
 
 
+def test_latest_versions_uses_stems_without_changing_registered_dois() -> None:
+    """Group by explicit or derived stems while preserving the selected DOI."""
+    first = {'chemrxiv_doi': '10.26434/chemrxiv.15007737/v1',
+             'paper_id': 'doi:10.26434/chemrxiv.15007737/v1', 'version': '1'}
+    second = {'chemrxiv_doi': '10.26434/chemrxiv.15007737/v2',
+              'paper_id': 'doi:10.1234/published', 'version': '2'}
+
+    result = chemrxiv.latest_versions([first, second])
+
+    assert len(result) == 1
+    assert result[0]['chemrxiv_doi'] == '10.26434/chemrxiv.15007737/v2'
+    assert result[0]['paper_id'] == 'doi:10.1234/published'
+    # An explicit stem takes precedence over one derived from the DOI.
+    assert len(chemrxiv.latest_versions([first, {**second, 'chemrxiv_stem': 'other'}])) == 2
+
+
 def test_request_paces_consecutive_calls_with_the_courtesy_delay() -> None:
     """Space consecutive requests through the shared window."""
     slept: list[float] = []
@@ -444,6 +460,27 @@ def test_request_json_reports_malformed_and_unexpected_bodies() -> None:
     session = FakeSession([FakeResponse('[1, 2, 3]')])
     with pytest.raises(RuntimeError, match='unexpected payload of type list'):
         chemrxiv.request_json(chemrxiv.search_url(), session=session)
+
+
+@pytest.mark.parametrize('body', ['null', '[]', '0', 'false', '"text"'])
+def test_request_payload_preserves_non_object_json(body: str) -> None:
+    """Keep permissive payload decoding available for the category endpoint."""
+    session = FakeSession([FakeResponse(body)])
+    assert chemrxiv.request_payload(chemrxiv.categories_url(), session=session) == json.loads(body)
+    assert len(session.calls) == 1
+
+
+@pytest.mark.parametrize(('body', 'message'), [
+    ('  <html>challenge</html>', 'HTML challenge page'),
+    ('{broken', 'malformed JSON'),
+])
+def test_request_decode_errors_keep_the_cause_and_do_not_retry(body: str, message: str) -> None:
+    """Decode each successful response once and retain the underlying failure."""
+    session = FakeSession([FakeResponse(body)])
+    with pytest.raises(RuntimeError, match=message) as caught:
+        chemrxiv.request_json(chemrxiv.search_url(), session=session)
+    assert isinstance(caught.value.__cause__, ValueError)
+    assert len(session.calls) == 1
 
 
 def test_search_page_sends_the_scope_the_caller_asked_for() -> None:

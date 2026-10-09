@@ -13,7 +13,6 @@ serves, so text from either needs no PDF scrape.
 from __future__ import annotations
 
 import ast
-import html
 import json
 import os
 import re
@@ -29,9 +28,10 @@ from urllib.parse import quote, urlparse
 
 from paperminertoolkit.providers import (arxiv, biorxiv, chemrxiv, core, elsevier, medrxiv,
                           openalex, pubmed, unpaywall)
-from paperminertoolkit.corpus.database import (PIPELINE_COLUMNS, add_asset,
+from paperminertoolkit.corpus.database import (add_asset,
                                 add_structured_document, connect,
-                                get_asset_metadata, paper_rows, upsert_paper)
+                                get_asset_metadata, paper_rows,
+                                set_pipeline_status as _set_status, upsert_paper)
 from paperminertoolkit.corpus.filtering import active_filter_stack, current_filter_statuses
 from paperminertoolkit.providers import base as provider
 from paperminertoolkit.providers import registry
@@ -44,29 +44,6 @@ DOWNLOAD_SOURCES = {*registry.names(registry.PDF), *registry.names(registry.TEXT
 TEXT_SOURCES = set(registry.names(registry.TEXT))
 _Paper: TypeAlias = dict[str, Any]
 _TextDownloadResult: TypeAlias = tuple[bool, str, provider.FullTextDocument | None]
-
-
-def _elsevier_string_formatter(text: str) -> str:
-    """Clean wrapper artifacts from Elsevier original text.
-
-    Parameters
-    ----------
-    text : str
-        Raw ``originalText`` value.
-
-    Returns
-    -------
-    str
-        Cleaned article text.
-    """
-    if text.count('Acknowledgements') == 2:
-        text = text.split('Acknowledgements')[1]
-    elif text.count('References') == 2:
-        text = text.split('References')[1]
-    if 'amazonaws.com/' in text:
-        text = text.split('amazonaws.com/')[-1]
-        text = text[text.find(' '):]
-    return text
 
 
 def _full_text_uri(paper: Mapping[str, Any]) -> str | None:
@@ -132,17 +109,6 @@ def _has_value(value: object) -> bool:
     return value is not None and str(value).strip() != ''
 
 
-def _set_status(paper: _Paper, column: str, status: str, error: str | None = None) -> None:
-    """Update a corpus paper status field and optional error text."""
-    if column not in PIPELINE_COLUMNS:
-        raise KeyError(f'Unknown pipeline status column: {column}')
-    paper[column] = status
-    if error:
-        paper['last_error'] = error
-    elif status in {'succeeded', 'stored'}:
-        paper['last_error'] = ''
-
-
 def _download_text(paper: Mapping[str, Any], filepath: str | PathLike[str]) -> bool:
     """Download Elsevier XML-derived text for one paper row to ``filepath``.
 
@@ -163,15 +129,7 @@ def _download_text(paper: Mapping[str, Any], filepath: str | PathLike[str]) -> b
     bool
         Whether text was retrieved and written.
     """
-    uri = _full_text_uri(paper)
-    if not uri:
-        return False
-    document = elsevier.full_text_document(uri, elsevier.configured_api_key())
-    if not document.text:
-        return False
-    with open(filepath, 'w', encoding='utf-8') as out_file:
-        out_file.write(document.text)
-    return True
+    return _download_elsevier_text(paper, filepath)[0]
 
 
 def _pdf_urls(paper: Mapping[str, Any]) -> list[str]:
@@ -628,6 +586,136 @@ def _download_pubmed_abstract(
     return False, f'no PubMed abstract found for {pmid}', ''
 
 
+def _preprint_record(identifier: str | None, source_name: str) -> tuple[Mapping[str, Any] | None, str]:
+    """Fetch a DOI-addressed preprint and report provider-specific failures.
+
+    Parameters
+    ----------
+    identifier : str or None
+        Stored identifier resolved by the provider's own DOI rules.
+    source_name : str
+        Registered preprint provider name.
+
+    Returns
+    -------
+    tuple[Mapping[str, Any] or None, str]
+        Normalized record, or ``None`` and a failure reason.
+    """
+    source = registry.SOURCES[source_name]
+    if identifier is None:
+        return None, f'missing {source.label} DOI'
+    try:
+        entry = registry.resolve(source_name).fetch_doi(identifier)
+    except RuntimeError as error:
+        return None, str(error)
+    if entry is None:
+        return None, f'no {source.label} record found for {identifier}'
+    return entry, ''
+
+
+def _download_rxiv_pdf(
+    record: tuple[Mapping[str, Any] | None, str],
+    filepath: str | PathLike[str],
+    source_name: str,
+) -> tuple[bool, str]:
+    """Download a bioRxiv-family PDF using the fetched posting's version.
+
+    Parameters
+    ----------
+    record : tuple[Mapping[str, Any] or None, str]
+        Fetched preprint or its failure reason.
+    filepath : str or os.PathLike[str]
+        Destination path for the PDF.
+    source_name : str
+        Registered bioRxiv-family provider name.
+
+    Returns
+    -------
+    tuple[bool, str]
+        Success flag and the source URL or failure reason.
+    """
+    entry, error = record
+    if entry is None:
+        return False, error
+    source = registry.SOURCES[source_name]
+    client = registry.resolve(source_name)
+    url = client.pdf_url(str(entry.get(source.identifier_column) or ''),
+                         str(entry.get('version') or ''))
+    if not url:
+        return False, f'missing {source.label} DOI'
+    ok, error = _download_url_to_pdf(url, filepath, headers=client.request_headers())
+    return (True, url) if ok else (False, error)
+
+
+def _download_rxiv_text(
+    record: tuple[Mapping[str, Any] | None, str],
+    filepath: str | PathLike[str],
+    source_name: str,
+) -> _TextDownloadResult:
+    """Write a bioRxiv-family JATS document's derived text.
+
+    Parameters
+    ----------
+    record : tuple[Mapping[str, Any] or None, str]
+        Fetched preprint or its failure reason.
+    filepath : str or os.PathLike[str]
+        Destination path for the text.
+    source_name : str
+        Registered bioRxiv-family provider name.
+
+    Returns
+    -------
+    tuple[bool, str, provider.FullTextDocument or None]
+        Success flag, failure reason, and the original document on success.
+
+    Raises
+    ------
+    OSError
+        If the text cannot be written.
+    """
+    entry, error = record
+    if entry is None:
+        return False, error, None
+    source = registry.SOURCES[source_name]
+    try:
+        document = registry.resolve(source_name).full_text_document(entry)
+    except RuntimeError as error:
+        return False, str(error), None
+    if not document.text:
+        return False, f'no {source.label} full text for {entry.get(source.identifier_column)}', None
+    with open(filepath, 'w', encoding='utf-8') as out_file:
+        out_file.write(document.text)
+    return True, '', document
+
+
+def _preprint_abstract(
+    record: tuple[Mapping[str, Any] | None, str],
+    source_name: str,
+) -> tuple[bool, str, str]:
+    """Read a fetched preprint's abstract with its provider identity.
+
+    Parameters
+    ----------
+    record : tuple[Mapping[str, Any] or None, str]
+        Fetched preprint or its failure reason.
+    source_name : str
+        Registered preprint provider name.
+
+    Returns
+    -------
+    tuple[bool, str, str]
+        Success flag, provider name or failure reason, and cleaned abstract.
+    """
+    entry, error = record
+    if entry is None:
+        return False, error, ''
+    abstract = _clean_abstract(entry.get('abstract'))
+    if abstract:
+        return True, source_name, abstract
+    source = registry.SOURCES[source_name]
+    return False, f'no {source.label} abstract found for {entry.get(source.identifier_column)}', ''
+
+
 def _medrxiv_identifier(paper: Mapping[str, Any]) -> str | None:
     """Resolve a stored medRxiv DOI for a paper row.
 
@@ -662,16 +750,7 @@ def _medrxiv_record(paper: Mapping[str, Any]) -> tuple[Mapping[str, Any] | None,
     tuple[Mapping[str, Any] or None, str]
         Normalized record, or ``None`` and a failure reason.
     """
-    identifier = _medrxiv_identifier(paper)
-    if identifier is None:
-        return None, 'missing medRxiv DOI'
-    try:
-        entry = medrxiv.fetch_doi(identifier)
-    except RuntimeError as e:
-        return None, str(e)
-    if entry is None:
-        return None, f'no medRxiv record found for {identifier}'
-    return entry, ''
+    return _preprint_record(_medrxiv_identifier(paper), 'medrxiv')
 
 
 def _download_medrxiv_pdf(
@@ -699,14 +778,7 @@ def _download_medrxiv_pdf(
     tuple[bool, str]
         Success flag, and the source URL or a failure reason.
     """
-    entry, error = _medrxiv_record(paper)
-    if entry is None:
-        return False, error
-    url = medrxiv.pdf_url(str(entry.get('medrxiv_doi') or ''), str(entry.get('version') or ''))
-    if not url:
-        return False, 'missing medRxiv DOI'
-    ok, error = _download_url_to_pdf(url, filepath, headers=medrxiv.request_headers())
-    return (True, url) if ok else (False, error)
+    return _download_rxiv_pdf(_medrxiv_record(paper), filepath, 'medrxiv')
 
 
 def _download_medrxiv_text(
@@ -733,18 +805,7 @@ def _download_medrxiv_text(
     OSError
         If the text cannot be written.
     """
-    entry, error = _medrxiv_record(paper)
-    if entry is None:
-        return False, error, None
-    try:
-        document = medrxiv.full_text_document(entry)
-    except RuntimeError as e:
-        return False, str(e), None
-    if not document.text:
-        return False, f'no medRxiv full text for {entry.get("medrxiv_doi")}', None
-    with open(filepath, 'w', encoding='utf-8') as out_file:
-        out_file.write(document.text)
-    return True, '', document
+    return _download_rxiv_text(_medrxiv_record(paper), filepath, 'medrxiv')
 
 
 def _download_medrxiv_abstract(
@@ -763,13 +824,7 @@ def _download_medrxiv_abstract(
         Success flag, provider name or failure reason, and normalized abstract
         text. The text is empty when retrieval fails.
     """
-    entry, error = _medrxiv_record(paper)
-    if entry is None:
-        return False, error, ''
-    abstract = _clean_abstract(entry.get('abstract'))
-    if abstract:
-        return True, 'medrxiv', abstract
-    return False, f'no medRxiv abstract found for {entry.get("medrxiv_doi")}', ''
+    return _preprint_abstract(_medrxiv_record(paper), 'medrxiv')
 
 
 def _biorxiv_identifier(paper: Mapping[str, Any]) -> str | None:
@@ -806,16 +861,7 @@ def _biorxiv_record(paper: Mapping[str, Any]) -> tuple[Mapping[str, Any] | None,
     tuple[Mapping[str, Any] or None, str]
         Normalized record, or ``None`` and a failure reason.
     """
-    identifier = _biorxiv_identifier(paper)
-    if identifier is None:
-        return None, 'missing bioRxiv DOI'
-    try:
-        entry = biorxiv.fetch_doi(identifier)
-    except RuntimeError as e:
-        return None, str(e)
-    if entry is None:
-        return None, f'no bioRxiv record found for {identifier}'
-    return entry, ''
+    return _preprint_record(_biorxiv_identifier(paper), 'biorxiv')
 
 
 def _download_biorxiv_pdf(
@@ -843,14 +889,7 @@ def _download_biorxiv_pdf(
     tuple[bool, str]
         Success flag, and the source URL or a failure reason.
     """
-    entry, error = _biorxiv_record(paper)
-    if entry is None:
-        return False, error
-    url = biorxiv.pdf_url(str(entry.get('biorxiv_doi') or ''), str(entry.get('version') or ''))
-    if not url:
-        return False, 'missing bioRxiv DOI'
-    ok, error = _download_url_to_pdf(url, filepath, headers=biorxiv.request_headers())
-    return (True, url) if ok else (False, error)
+    return _download_rxiv_pdf(_biorxiv_record(paper), filepath, 'biorxiv')
 
 
 def _download_biorxiv_text(
@@ -877,18 +916,7 @@ def _download_biorxiv_text(
     OSError
         If the text cannot be written.
     """
-    entry, error = _biorxiv_record(paper)
-    if entry is None:
-        return False, error, None
-    try:
-        document = biorxiv.full_text_document(entry)
-    except RuntimeError as e:
-        return False, str(e), None
-    if not document.text:
-        return False, f'no bioRxiv full text for {entry.get("biorxiv_doi")}', None
-    with open(filepath, 'w', encoding='utf-8') as out_file:
-        out_file.write(document.text)
-    return True, '', document
+    return _download_rxiv_text(_biorxiv_record(paper), filepath, 'biorxiv')
 
 
 def _download_biorxiv_abstract(
@@ -907,13 +935,7 @@ def _download_biorxiv_abstract(
         Success flag, provider name or failure reason, and normalized abstract
         text. The text is empty when retrieval fails.
     """
-    entry, error = _biorxiv_record(paper)
-    if entry is None:
-        return False, error, ''
-    abstract = _clean_abstract(entry.get('abstract'))
-    if abstract:
-        return True, 'biorxiv', abstract
-    return False, f'no bioRxiv abstract found for {entry.get("biorxiv_doi")}', ''
+    return _preprint_abstract(_biorxiv_record(paper), 'biorxiv')
 
 
 def _chemrxiv_identifier(paper: Mapping[str, Any]) -> str | None:
@@ -951,16 +973,7 @@ def _chemrxiv_record(paper: Mapping[str, Any]) -> tuple[Mapping[str, Any] | None
     tuple[Mapping[str, Any] or None, str]
         Normalized record, or ``None`` and a failure reason.
     """
-    identifier = _chemrxiv_identifier(paper)
-    if identifier is None:
-        return None, 'missing chemRxiv DOI'
-    try:
-        entry = chemrxiv.fetch_doi(identifier)
-    except RuntimeError as e:
-        return None, str(e)
-    if entry is None:
-        return None, f'no chemRxiv record found for {identifier}'
-    return entry, ''
+    return _preprint_record(_chemrxiv_identifier(paper), 'chemrxiv')
 
 
 def _download_chemrxiv_pdf(
@@ -1022,13 +1035,7 @@ def _download_chemrxiv_abstract(
         Success flag, provider name or failure reason, and normalized abstract
         text. The text is empty when retrieval fails.
     """
-    entry, error = _chemrxiv_record(paper)
-    if entry is None:
-        return False, error, ''
-    abstract = _clean_abstract(entry.get('abstract'))
-    if abstract:
-        return True, 'chemrxiv', abstract
-    return False, f'no chemRxiv abstract found for {entry.get("chemrxiv_doi")}', ''
+    return _preprint_abstract(_chemrxiv_record(paper), 'chemrxiv')
 
 
 def _arxiv_identifier(paper: Mapping[str, Any]) -> str | None:
@@ -1161,10 +1168,7 @@ def _clean_abstract(value: object) -> str:
         return ''
     if isinstance(value, list):
         value = ' '.join(str(part) for part in value if _has_value(part))
-    text = html.unescape(str(value))
-    text = re.sub(r'<[^>]+>', ' ', text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
+    return provider.html_plain_text(str(value))
 
 
 def _abstract_from_mapping(value: object) -> str:

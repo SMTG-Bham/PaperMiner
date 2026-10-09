@@ -345,6 +345,37 @@ def resolve(name: str) -> ModuleType:
     return _MODULES[name]
 
 
+def _resolve_callable(target: str, description: str) -> Callable[..., Any]:
+    """Load a callable from a registry target without caching its attribute.
+
+    Parameters
+    ----------
+    target : str
+        Dotted ``module:attribute`` target.
+    description : str
+        Target's role and source, used in malformed-target errors.
+
+    Returns
+    -------
+    Callable[..., Any]
+        Callable currently stored at the target attribute.
+
+    Raises
+    ------
+    ValueError
+        If the target does not name both a module and an attribute.
+    TypeError
+        If the resolved attribute is not callable.
+    """
+    module_name, separator, attribute = target.partition(':')
+    if not separator or not module_name or not attribute:
+        raise ValueError(f'invalid {description}: {target!r}')
+    handler = getattr(importlib.import_module(module_name), attribute)
+    if not callable(handler):
+        raise TypeError(f'{target} is not callable')
+    return handler
+
+
 def resolve_handler(name: str, capability: str) -> Callable[..., Any]:
     """Resolve the callable implementing a source capability.
 
@@ -376,13 +407,7 @@ def resolve_handler(name: str, capability: str) -> Callable[..., Any]:
     target = SOURCES[name].handler(capability)
     if not target:
         raise ValueError(f'{name} does not implement {capability}')
-    module_name, separator, attribute = target.partition(':')
-    if not separator or not module_name or not attribute:
-        raise ValueError(f'invalid {capability} handler for {name}: {target!r}')
-    handler = getattr(importlib.import_module(module_name), attribute)
-    if not callable(handler):
-        raise TypeError(f'{target} is not callable')
-    return handler
+    return _resolve_callable(target, f'{capability} handler for {name}')
 
 
 def resolve_probe(name: str) -> Callable[..., Any] | None:
@@ -406,13 +431,7 @@ def resolve_probe(name: str) -> Callable[..., Any] | None:
     target = SOURCES[name].probe
     if not target:
         return None
-    module_name, separator, attribute = target.partition(':')
-    if not separator or not module_name or not attribute:
-        raise ValueError(f'invalid probe for {name}: {target!r}')
-    probe = getattr(importlib.import_module(module_name), attribute)
-    if not callable(probe):
-        raise TypeError(f'{target} is not callable')
-    return probe
+    return _resolve_callable(target, f'probe for {name}')
 
 
 def resolve_reachability(name: str, capability: str) -> Callable[..., Any] | None:
@@ -443,13 +462,7 @@ def resolve_reachability(name: str, capability: str) -> Callable[..., Any] | Non
         raise ValueError('reachability is defined only for text and abstract capabilities')
     if not target:
         return None
-    module_name, separator, attribute = target.partition(':')
-    if not separator or not module_name or not attribute:
-        raise ValueError(f'invalid {capability} reachability predicate for {name}: {target!r}')
-    predicate = getattr(importlib.import_module(module_name), attribute)
-    if not callable(predicate):
-        raise TypeError(f'{target} is not callable')
-    return predicate
+    return _resolve_callable(target, f'{capability} reachability predicate for {name}')
 
 
 def names(capability: str) -> tuple[str, ...]:
