@@ -46,6 +46,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+bert = [
+  "torch",
+  "transformers>=4.30",
+  "sentencepiece",
+]
 test = [
   "pytest",
   "pytest-cov",

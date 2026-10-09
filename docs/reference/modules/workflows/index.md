@@ -9,6 +9,7 @@ search
 download
 figures
 enrichment
+entities
 imports
 topics
 utilities

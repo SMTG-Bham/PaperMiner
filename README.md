@@ -28,6 +28,9 @@ PaperMinerToolkit requires Python 3.11 or newer:
 pip install paperminertoolkit
 ```
 
+For local entity extraction with fine-tuned BERT checkpoints, install
+`pip install 'paperminertoolkit[bert]'`.
+
 ## Quickstart
 
 Configure a text model and any search/download credentials you need, then run a small workflow:
@@ -52,6 +55,27 @@ pmt store papers.db \
 ```
 
 Use `pmt corpus stats papers.db` to inspect stored content and `pmt status papers.db` to inspect pipeline progress.
+
+## BERT entity extraction
+
+Annotate stored abstracts with a fine-tuned token-classification checkpoint:
+
+```bash
+pmt entities corpus papers.db entities.jsonl \
+  --model ./models/matscibert-ner --field abstract
+```
+
+Replace the example path with your trained checkpoint directory or Hugging Face
+model ID. Use `pmt entities text paper.txt entities.jsonl --model CHECKPOINT` for
+a UTF-8 file. Results include entity labels, confidence scores, exact text,
+character offsets, and source metadata; long documents use overlapping windows.
+
+The published [MatSciBERT](https://huggingface.co/m3rg-iitd/matscibert) base model
+requires entity fine-tuning. The published
+[polyBERT](https://huggingface.co/HAYDERphd/polyBERT) produces polymer PSMILES
+fingerprints and is not a prose entity tagger. Supply a compatible fine-tuned
+token classifier; training is not part of this workflow. See the
+[entity extraction guide](https://paperminertoolkit.readthedocs.io/en/latest/workflow/entities.html).
 
 ## Documentation
 

@@ -10,7 +10,7 @@ import csv
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import click
 from paperminertoolkit.providers import registry as sources
@@ -21,12 +21,14 @@ from paperminertoolkit.corpus.database import (connect,
 from paperminertoolkit.providers.crossref import import_author_works
 from paperminertoolkit.workflows.search import search_for_papers
 from paperminertoolkit.extraction.compression import COMPRESSION_MODES, COMPRESSION_SCOPES
+from paperminertoolkit.extraction.entities import EntityExtractionConfig
 from paperminertoolkit.extraction.extract import (build_image_extraction_prompt,
                                                   build_reconciliation_prompt,
                                                   build_text_extraction_prompt)
 from paperminertoolkit.extraction.recipes import load_recipe
 from paperminertoolkit.workflows.download import download_papers
 from paperminertoolkit.workflows.enrichment import enrich_corpus
+from paperminertoolkit.workflows.entities import extract_corpus_entities, extract_file_entities
 from paperminertoolkit.corpus.filtering import (apply_regex_filter,
                                     apply_topic_filter,
                                     filter_overview,
@@ -798,6 +800,94 @@ def topics_models(db_path: str, batch_size: int) -> None:
         )
 
 
+def _entity_options(command: Callable[..., Any]) -> Callable[..., Any]:
+    """Apply the shared inference and export options to an entity command."""
+    options = [
+        click.option('--model', required=True,
+                     help='Fine-tuned token-classification checkpoint: Hugging Face ID or local directory.'),
+        click.option('--device', default='cpu', show_default=True,
+                     help='PyTorch device, for example cpu or cuda:0.'),
+        click.option('--batch-size', default=8, type=click.IntRange(min=1), show_default=True,
+                     help='Maximum number of text windows per inference batch.'),
+        click.option('--stride', default=64, type=click.IntRange(min=0), show_default=True,
+                     help='Overlapping tokens between long-document windows.'),
+        click.option('--max-length', default=None, type=click.IntRange(min=1),
+                     help='Tokens per window, including special tokens; defaults to the model limit.'),
+        click.option('--revision', default=None,
+                     help='Hugging Face checkpoint revision, such as a commit hash.'),
+        click.option('--cache-dir', default=None, type=click.Path(file_okay=False),
+                     help='Directory for downloaded model and tokenizer files.'),
+        click.option('--local-files-only', is_flag=True,
+                     help='Load only local or already cached checkpoint files.'),
+        click.option('--min-score', default=0.0, type=click.FloatRange(0, 1), show_default=True,
+                     help='Minimum entity confidence to include in the output.'),
+        click.option('--label', 'labels', multiple=True,
+                     help='Include this checkpoint-specific entity label; repeat for several.'),
+        click.option('--overwrite', is_flag=True,
+                     help='Replace an existing JSONL output file.'),
+    ]
+    for option in reversed(options):
+        command = option(command)
+    return command
+
+
+@click.command('corpus')
+@click.argument('db_path', type=click.Path(exists=True, dir_okay=False))
+@click.argument('output_path', type=click.Path(dir_okay=False))
+@click.option('--field', 'text_fields', multiple=True, default=('abstract',),
+              type=click.Choice(['title', 'abstract', 'text']), show_default=True,
+              help='Corpus text field to annotate; repeat to process several fields separately.')
+@_entity_options
+def entities_corpus(db_path: str, output_path: str, text_fields: tuple[str, ...],
+                    model: str, device: str, batch_size: int, stride: int,
+                    max_length: int | None, revision: str | None, cache_dir: str | None,
+                    local_files_only: bool, min_score: float, labels: tuple[str, ...],
+                    overwrite: bool) -> None:
+    """Extract named entities from stored corpus text into a JSONL file."""
+    try:
+        config = EntityExtractionConfig(
+            model=model, device=device, batch_size=batch_size, stride=stride,
+            max_length=max_length, revision=revision, cache_dir=cache_dir,
+            local_files_only=local_files_only,
+        )
+        summary = extract_corpus_entities(
+            db_path, output_path, config, text_fields=text_fields,
+            min_score=min_score, labels=labels or None, overwrite=overwrite,
+        )
+    except (ImportError, OSError, RuntimeError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+    click.echo(
+        f'Extracted {summary["entities"]} entities from {summary["documents"]} documents '
+        f'across {summary["papers"]} papers.'
+    )
+    click.echo(f'Entity annotations: {summary["output"]}')
+
+
+@click.command('text')
+@click.argument('input_path', type=click.Path(exists=True, dir_okay=False))
+@click.argument('output_path', type=click.Path(dir_okay=False))
+@_entity_options
+def entities_text(input_path: str, output_path: str, model: str, device: str,
+                  batch_size: int, stride: int, max_length: int | None,
+                  revision: str | None, cache_dir: str | None, local_files_only: bool,
+                  min_score: float, labels: tuple[str, ...], overwrite: bool) -> None:
+    """Extract named entities from one UTF-8 text file into a JSONL file."""
+    try:
+        config = EntityExtractionConfig(
+            model=model, device=device, batch_size=batch_size, stride=stride,
+            max_length=max_length, revision=revision, cache_dir=cache_dir,
+            local_files_only=local_files_only,
+        )
+        summary = extract_file_entities(
+            input_path, output_path, config, min_score=min_score,
+            labels=labels or None, overwrite=overwrite,
+        )
+    except (ImportError, OSError, RuntimeError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+    click.echo(f'Extracted {summary["entities"]} entities from {summary["documents"]} documents.')
+    click.echo(f'Entity annotations: {summary["output"]}')
+
+
 @click.command('scrape')
 @click.argument('db_path', default='papers.db', type=click.Path(exists=True))
 @click.argument('recipe', default='sse', type=str)
@@ -1197,6 +1287,11 @@ def import_group() -> None:
     """Import existing papers or an author's publication list."""
 
 
+@click.group('entities')
+def entities_group() -> None:
+    """Extract named entities with fine-tuned BERT and transformer checkpoints."""
+
+
 @click.group('config')
 def config_group() -> None:
     """Configure model profiles and provider credentials."""
@@ -1239,6 +1334,10 @@ topics_group.add_command(topics_trends, 'trends')
 topics_group.add_command(topics_store, 'store')
 topics_group.add_command(topics_models, 'models')
 main.add_command(topics_group)
+
+entities_group.add_command(entities_corpus, 'corpus')
+entities_group.add_command(entities_text, 'text')
+main.add_command(entities_group)
 
 import_group.add_command(import_pdf_folder, 'pdfs')
 import_group.add_command(import_author, 'author')
