@@ -1276,20 +1276,34 @@ def test_figure_package_model_label_falls_back_to_the_figure_identifier() -> Non
     assert package.model_label == 'Figure fig-9'
 
 
-def test_figure_packages_restore_a_missing_image_extension(tmp_path: Path) -> None:
-    """Give an extension-less stored filename a usable image extension."""
+@pytest.mark.parametrize(('original_filename', 'expected_filename'), [
+    (None, 'fig-1.png'),
+    ('', 'fig-1.png'),
+    ('figure-one', 'figure-one.png'),
+    ('../figure one', 'figure_one.png'),
+    ('figure.jpeg', 'figure.jpeg'),
+    ('.hidden', 'hidden.png'),
+])
+def test_figure_packages_preserve_image_filename_and_extension(
+    tmp_path: Path,
+    original_filename: str | None,
+    expected_filename: str,
+) -> None:
+    """Preserve filenames, sanitize path fragments, and default to PNG."""
     packages = scrape._figure_packages(
         [{
             'metadata': {'figure_id': 'fig-1', 'caption': 'Caption.', 'figure_label': 'Figure 1'},
             'content': b'image bytes',
             'source': 'pubmed',
-            'original_filename': 'figure-one',
+            'original_filename': original_filename,
         }],
         tmp_path / 'images',
         force=False,
     )
     assert len(packages) == 1
-    assert packages[0].path.endswith('figure-one.png')
+    path = Path(packages[0].path)
+    assert path == tmp_path / 'images' / expected_filename
+    assert path.read_bytes() == b'image bytes'
 
 
 def test_scrape_papers_layout_mode_requires_a_pdf_for_paper_text_context(
