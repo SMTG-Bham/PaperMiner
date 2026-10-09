@@ -33,15 +33,22 @@ For local entity extraction with fine-tuned BERT checkpoints, install
 
 ## Quickstart
 
-Configure a text model and any search/download credentials you need, then run a small workflow:
+Probe a public source, then gather a small corpus of abstracts. These steps need no model or API key:
+
+```bash
+pmt probe --source arxiv
+
+pmt gather "lithium solid electrolyte" papers.db \
+  --source arxiv --count 5 --format abstract --download-source arxiv
+pmt corpus stats papers.db
+```
+
+`pmt gather` combines search and download, merging duplicate records and downloading only papers matched by that search. Repeat `--source` to search several providers and `--download-source` to select content providers separately. Configure only the [provider credentials](https://paperminertoolkit.readthedocs.io/en/latest/workflow/configuration.html) you need. Use `--json` on `probe` or `gather` for scriptable summaries.
+
+To extract structured records from those abstracts, configure a text model:
 
 ```bash
 pmt config model text --provider openai --model YOUR_TEXT_MODEL
-
-pmt search "lithium solid electrolyte" papers.db \
-  --source openalex --count 25
-pmt enrich papers.db
-pmt download papers.db --format abstract
 
 pmt scrape papers.db sse \
   --mode abstract \
@@ -54,7 +61,7 @@ pmt store papers.db \
   --assume-yes
 ```
 
-Use `pmt corpus stats papers.db` to inspect stored content and `pmt status papers.db` to inspect pipeline progress.
+Use `pmt status papers.db` to inspect pipeline progress. `pmt search` and `pmt download` remain available for separate discovery and content retrieval stages.
 
 ## BERT entity extraction
 

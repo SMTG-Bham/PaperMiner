@@ -822,12 +822,12 @@ def _store_search_abstracts(
 
 def search_for_papers(query: str,
                       db_path: str = 'papers.db',
-                      source: str = 'all',
+                      source: str | Iterable[str] = 'all',
                       count: int = 200,
                       store_abstract: bool = False,
                       enrich: bool = False,
                       parallel: bool = False,
-                      workers: int | None = None) -> None:
+                      workers: int | None = None) -> dict[str, Any]:
     """Search providers and merge results into a corpus.
 
     Parameters
@@ -836,8 +836,9 @@ def search_for_papers(query: str,
         Search expression.
     db_path : str, default='papers.db'
         Path to the SQLite paper corpus.
-    source : {'all', 'core', 'elsevier', 'openalex', 'pubmed', 'arxiv', 'medrxiv', 'biorxiv', 'chemrxiv'}, default='all'
-        Provider or provider set to search.
+    source : str or Iterable[str], default='all'
+        Provider names to search. ``all`` expands to every search provider;
+        repeated names are searched only once.
     count : int, default=200
         Maximum number of records requested from each provider.
     store_abstract : bool, default=False
@@ -854,20 +855,28 @@ def search_for_papers(query: str,
 
     Returns
     -------
-    None
-        Results are written directly to ``db_path``.
+    dict[str, Any]
+        Search identifier, final ``status``, resolved ``sources``, per-provider
+        ``source_results``, deduplicated canonical corpus ``paper_ids``, and
+        ``result_count``, ``papers_added``, ``papers_updated``, and
+        ``abstracts_stored`` counts. Results are also written to ``db_path``.
 
     Raises
     ------
     ValueError
         If ``source`` is unsupported or required provider configuration is
-        missing, or if ``workers`` is less than one.
+        missing, the query is blank, or ``count`` or ``workers`` is less than one.
     Exception
         Whatever the provider raised, when exactly one source was selected. A
         run over several sources reports a failing one and carries on with the
         rest, because a partial corpus is more useful than none.
     """
-    requested = sources.resolve_names([source], sources.SEARCH)
+    if not query.strip():
+        raise ValueError('query must not be blank')
+    if count < 1:
+        raise ValueError('count must be at least 1')
+    selectors = [source] if isinstance(source, str) else list(source)
+    requested = sources.resolve_names(selectors, sources.SEARCH)
     if workers is not None and workers < 1:
         raise ValueError('workers must be at least 1')
     parallel = parallel or workers is not None
@@ -876,7 +885,7 @@ def search_for_papers(query: str,
         search_id = begin_search_run(
             conn,
             query,
-            source,
+            source if isinstance(source, str) else ','.join(selectors),
             requested,
             count,
             store_abstract=store_abstract,
@@ -929,6 +938,7 @@ def search_for_papers(query: str,
     records = new_papers.to_dict('records')
     result_count = len(records)
     added = updated = abstract_count = 0
+    paper_ids: dict[str, None] = {}
     enrichment_summary: dict[str, int] = {}
     failed_sources = sum(
         result['status'] == 'failed' for result in source_results.values()
@@ -948,6 +958,9 @@ def search_for_papers(query: str,
                 for provider_name, frame in frames:
                     for result_rank, paper in enumerate(frame.to_dict('records')):
                         add_search_result(conn, search_id, paper, provider_name, result_rank)
+                        matched = find_paper(conn, paper)
+                        if matched is not None:
+                            paper_ids[matched['paper_id']] = None
             finish_search_run(
                 conn,
                 search_id,
@@ -969,9 +982,20 @@ def search_for_papers(query: str,
             finish_search_run(conn, search_id, 'failed', source_results)
         raise
 
+    summary = {
+        'search_id': search_id,
+        'status': final_status,
+        'sources': requested,
+        'source_results': source_results,
+        'paper_ids': list(paper_ids),
+        'result_count': result_count,
+        'papers_added': added,
+        'papers_updated': updated,
+        'abstracts_stored': abstract_count,
+    }
     if new_papers.empty:
         print('Document search found 0 new results.')
-        return
+        return summary
     print(f'Document search found {added} new results and updated {updated} existing rows.')
     if store_abstract:
         print(f'Stored {abstract_count} search-time abstracts.')
@@ -979,3 +1003,4 @@ def search_for_papers(query: str,
         print(f'Enriched {enrichment_summary.get("succeeded", 0)} papers '
               f'({enrichment_summary.get("partial", 0)} partial, '
               f'{enrichment_summary.get("not_found", 0)} not found).')
+    return summary

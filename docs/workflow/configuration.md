@@ -5,10 +5,16 @@ PaperMinerToolkit keeps search/download credentials separate from the text and v
 ## Check what is configured and answering
 
 ```bash
-pmt config providers
+pmt probe
+pmt probe --source arxiv --source pubmed
+pmt probe --no-probe --json
 ```
 
-One row per provider, distinguishing three states, because they need different
+`pmt config providers` remains available with the same diagnostics. With no
+`--source`, or with `--source all`, the command checks every provider. Configure
+only those credentials your workflow needs; public sources such as arXiv need none.
+
+One row per provider, distinguishing the following states, because they need different
 fixes and collapsing them into "not working" sends you to re-check a key when the
 service is simply down:
 
@@ -57,7 +63,10 @@ lookup is used for exactly that reason.
 The command exits non-zero when a provider that *is* configured fails, so it can gate
 a script. A provider that is merely unconfigured is a choice, not a fault, and does
 not affect the exit code. `--no-probe` reports what is configured without making any
-requests, and `--source` repeated limits the check to named providers.
+requests, and `--source` repeated limits the check to named providers. `--json`
+writes a machine-readable report to standard output, with progress and diagnostic
+messages on standard error. A configured provider that does not respond produces
+exit code 1 in either output mode.
 
 ## Search and download services
 

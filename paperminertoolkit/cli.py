@@ -9,6 +9,9 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import sqlite3
+import sys
+from contextlib import nullcontext, redirect_stdout
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -20,6 +23,8 @@ from paperminertoolkit.corpus.database import (connect,
                                                search_history)
 from paperminertoolkit.providers.crossref import import_author_works
 from paperminertoolkit.workflows.search import search_for_papers
+from paperminertoolkit.workflows.gather import gather_papers
+from paperminertoolkit.probe_cli import probe, report_provider_status
 from paperminertoolkit.extraction.compression import COMPRESSION_MODES, COMPRESSION_SCOPES
 from paperminertoolkit.extraction.entities import EntityExtractionConfig
 from paperminertoolkit.extraction.extract import (build_image_extraction_prompt,
@@ -83,15 +88,16 @@ def _format_bytes(size: int) -> str:
 
 @click.command('search')
 @click.argument('query', default='Lithium solid electrolyte', type=str)
-@click.argument('db_path', default='papers.db', type=click.Path())
+@click.argument('db_path', default='papers.db', type=click.Path(dir_okay=False))
 @click.option('--source',
               type=click.Choice(sources.choices(sources.SEARCH)),
-              default='all',
+              multiple=True,
+              default=('all',),
               show_default=True,
-              help='Search source to use.')
+              help='Search source to use. Repeat to choose more than one.')
 @click.option('--count',
               default=200,
-              type=int,
+              type=click.IntRange(min=1),
               show_default=True,
               help='Maximum results to request from each selected source.')
 @click.option('--store-abstract',
@@ -106,13 +112,94 @@ def _format_bytes(size: int) -> str:
               help='Search selected providers concurrently.')
 @click.option('--workers', default=None, type=click.IntRange(min=1),
               help='Maximum provider workers; also enables parallel search.')
-def paper_search(query: str, db_path: str, source: str, count: int,
+def paper_search(query: str, db_path: str, source: tuple[str, ...], count: int,
                  store_abstract: bool, enrich_metadata: bool, parallel: bool,
                  workers: int | None) -> None:
     """Search configured paper sources and merge results into the paper corpus."""
-    search_for_papers(query, db_path, source=source, count=count,
-                      store_abstract=store_abstract, enrich=enrich_metadata,
-                      parallel=parallel, workers=workers)
+    if not query.strip():
+        raise click.BadParameter('Search query must not be blank.', param_hint='QUERY')
+    try:
+        summary = search_for_papers(
+            query, db_path, source=source[0] if len(source) == 1 else source, count=count,
+            store_abstract=store_abstract, enrich=enrich_metadata,
+            parallel=parallel, workers=workers,
+        )
+    except (RuntimeError, ValueError, OSError, sqlite3.Error) as error:
+        raise click.ClickException(str(error)) from error
+    if summary:
+        _check_search_status(summary)
+
+
+def _check_search_status(summary: Mapping[str, Any]) -> None:
+    """Report incomplete searches after preserving their available results."""
+    if summary['status'] in {'partial', 'failed'}:
+        failed = [name for name, result in summary['source_results'].items()
+                  if result['status'] == 'failed']
+        raise click.ClickException(
+            f'Search {summary["status"]}: {", ".join(failed)} failed. '
+            'Available results have been saved; inspect pmt corpus searches for details.'
+        )
+
+
+@click.command('gather')
+@click.argument('query')
+@click.argument('db_path', default='papers.db', type=click.Path(dir_okay=False))
+@click.option('--source', multiple=True,
+              type=click.Choice(sources.choices(sources.SEARCH)),
+              default=('all',), show_default=True,
+              help='Search source to use. Repeat to choose more than one.')
+@click.option('--count', default=200, type=click.IntRange(min=1), show_default=True,
+              help='Maximum results to request from each selected search source.')
+@click.option('--format', 'download_format',
+              type=click.Choice(['abstract', 'text', 'pdf', 'both']),
+              default='both', show_default=True,
+              help='Paper assets to retrieve after searching; both means text and PDF.')
+@click.option('--download-source', 'download_sources', multiple=True,
+              type=click.Choice(DOWNLOAD_CHOICES), default=('all',), show_default=True,
+              help='Content provider to try. Repeat to choose more than one.')
+@click.option('--abstract/--no-abstract', 'download_abstract',
+              default=True, show_default=True,
+              help='Store search abstracts and retrieve missing abstracts alongside assets.')
+@click.option('--enrich', 'enrich_metadata', is_flag=True,
+              help='Supplement matching papers with configured enrichment providers.')
+@click.option('--parallel', is_flag=True,
+              help='Search selected providers concurrently.')
+@click.option('--workers', default=None, type=click.IntRange(min=1),
+              help='Maximum provider workers; also enables parallel search.')
+@click.option('--force', is_flag=True,
+              help='Redownload requested assets even when already stored.')
+@click.option('--json', 'json_output', is_flag=True,
+              help='Write a JSON summary to stdout and progress to stderr.')
+def gather(query: str, db_path: str, source: tuple[str, ...], count: int,
+           download_format: str, download_sources: tuple[str, ...],
+           download_abstract: bool, enrich_metadata: bool, parallel: bool,
+           workers: int | None, force: bool, json_output: bool) -> None:
+    """Search for papers, save metadata, and retrieve assets in one run.
+
+    Only papers matched by this search are considered for download. Existing
+    assets are reused unless --force is set. No language model is required.
+    A failed search source gives exit status 1 after available results are saved.
+    """
+    if not query.strip():
+        raise click.BadParameter('Search query must not be blank.', param_hint='QUERY')
+    try:
+        with redirect_stdout(sys.stderr) if json_output else nullcontext():
+            summary = gather_papers(
+                query, db_path, source=source[0] if len(source) == 1 else source,
+                count=count, download_format=download_format,
+                download_sources=list(download_sources), download_abstract=download_abstract,
+                enrich=enrich_metadata, parallel=parallel, workers=workers, force=force,
+            )
+    except (RuntimeError, ValueError, OSError, sqlite3.Error) as error:
+        raise click.ClickException(str(error)) from error
+    if json_output:
+        click.echo(json.dumps(summary, indent=2))
+    else:
+        matched = len(summary['search']['paper_ids'])
+        click.echo(f'Gathered metadata for {matched} matching papers in {db_path}.')
+        if not matched:
+            click.echo('No matching papers to download.')
+    _check_search_status(summary['search'])
 
 
 @click.command('pdfs')
@@ -1218,34 +1305,19 @@ def model_status() -> None:
 @click.option('--no-probe', is_flag=True,
               help='Report what is configured without making any requests.')
 @click.option('--source', 'sources', multiple=True,
+              type=click.Choice(['all', *sources.SOURCES]),
               help='Report on one provider. Repeat for several.')
-def provider_status_command(no_probe: bool, sources: tuple[str, ...]) -> None:
+@click.option('--json', 'json_output', is_flag=True,
+              help='Emit machine-readable JSON with provider rows and an ok flag.')
+def provider_status_command(no_probe: bool, sources: tuple[str, ...],
+                            json_output: bool) -> None:
     """Show which providers are set up and which are answering.
 
-    Makes one cheap read-only request per configured provider, paced by that
-    provider's own limiter, so a full sweep takes a few seconds. Exits non-zero
-    when a configured provider is not answering, so it can gate a script.
+    Requests respect each provider's rate limiter. Checking openalex-content
+    costs 100 OpenAlex credits when its key is configured. Exits non-zero when
+    a configured provider is not answering, so it can gate a script.
     """
-    from paperminertoolkit.workflows.diagnostics import provider_status
-
-    names = list(sources) or None
-    rows = provider_status(names, probe=not no_probe)
-    width = max(len(row.label) for row in rows)
-    for row in rows:
-        took = f' {row.seconds:.1f}s' if row.seconds else ''
-        credential = row.credential or '-'
-        detail = row.detail if len(row.detail) <= 76 else f'{row.detail[:73]}...'
-        click.echo(f'{row.label:<{width}}  {row.state:<15} {credential:<18} {detail}{took}')
-    broken = [row for row in rows if row.is_problem]
-    if broken:
-        click.echo('')
-        # A refusal usually names its own remedy, so the reason is reprinted
-        # whole here rather than only in the shortened column above.
-        for row in broken:
-            click.echo(f'{row.label}: {row.detail}', err=True)
-        click.echo(f'\n{len(broken)} configured provider(s) not responding: '
-                   f'{", ".join(row.label for row in broken)}', err=True)
-        raise SystemExit(1)
+    report_provider_status(no_probe, sources, json_output=json_output)
 
 
 @click.command('reset')
@@ -1308,6 +1380,8 @@ def validate_group() -> None:
 
 
 main.add_command(paper_search, 'search')
+main.add_command(probe)
+main.add_command(gather)
 main.add_command(download, 'download')
 main.add_command(enrich, 'enrich')
 main.add_command(scrape, 'scrape')

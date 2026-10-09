@@ -32,6 +32,7 @@ from paperminertoolkit.providers import (arxiv, biorxiv, chemrxiv, core, elsevie
 from paperminertoolkit.corpus.database import (PIPELINE_COLUMNS, add_asset,
                                 add_structured_document, connect,
                                 get_asset_metadata, paper_rows, upsert_paper)
+from paperminertoolkit.corpus.filtering import active_filter_stack, current_filter_statuses
 from paperminertoolkit.providers import base as provider
 from paperminertoolkit.providers import registry
 from paperminertoolkit.settings import load_settings
@@ -1673,7 +1674,8 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
                     download_format: str = 'text',
                     sources: Iterable[str] | None = None,
                     download_abstract: bool = True,
-                    force: bool = False) -> None:
+                    force: bool = False,
+                    paper_ids: Iterable[str] | None = None) -> dict[str, int]:
     """Download paper assets and update a corpus in place.
 
     Parameters
@@ -1690,10 +1692,17 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
         Whether to retrieve and store abstracts.
     force : bool, default=False
         Redownload requested asset types even when they are already stored.
+    paper_ids : Iterable[str] or None, default=None
+        Restrict downloads to these canonical corpus identifiers. An empty
+        selection downloads nothing. Explicit selections also respect active
+        corpus filters: only papers with an ``included`` decision are eligible.
+        ``None`` retains the legacy behavior of visiting every corpus row.
 
     Returns
     -------
-    None
+    dict[str, int]
+        Downloaded ``texts``, ``pdfs``, and ``abstracts`` counts and the matching
+        ``texts_skipped``, ``pdfs_skipped``, and ``abstracts_skipped`` counts.
         Assets and status fields are written directly to the corpus.
 
     Raises
@@ -1706,8 +1715,27 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
     if download_format not in DOWNLOAD_FORMATS:
         raise ValueError(f'download_format must be one of: {", ".join(sorted(DOWNLOAD_FORMATS))}')
     sources = _configured_sources(sources or ['all'])
+    selected_ids = None if paper_ids is None else set(paper_ids)
+    summary = {
+        'texts': 0,
+        'pdfs': 0,
+        'abstracts': 0,
+        'texts_skipped': 0,
+        'pdfs_skipped': 0,
+        'abstracts_skipped': 0,
+    }
+    if selected_ids == set():
+        return summary
     with connect(db_path) as conn:
         papers = paper_rows(conn)
+        if selected_ids is not None:
+            papers = [paper for paper in papers if paper['paper_id'] in selected_ids]
+            if papers and active_filter_stack(conn):
+                statuses = current_filter_statuses(conn)
+                papers = [paper for paper in papers
+                          if statuses.get(paper['paper_id']) == 'included']
+            if not papers:
+                return summary
         if download_format == 'text' and not TEXT_SOURCES.intersection(sources):
             missing_text = force or any(
                 get_asset_metadata(conn, paper['paper_id'], 'text') is None
@@ -1731,14 +1759,6 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
                     'No PDF download sources are configured. Set an Unpaywall email, '
                     'CORE API key, or Elsevier API key.'
                 )
-        summary = {
-            'texts': 0,
-            'pdfs': 0,
-            'abstracts': 0,
-            'texts_skipped': 0,
-            'pdfs_skipped': 0,
-            'abstracts_skipped': 0,
-        }
         with tempfile.TemporaryDirectory(prefix='paperminertoolkit-download-') as download_dir:
             with tqdm(total=len(papers), desc='Downloading Papers', colour='#A020F0') as pbar:
                 for paper in papers:
@@ -1763,6 +1783,7 @@ def download_papers(db_path: str | PathLike[str] = 'papers.db',
             f"{summary['pdfs_skipped']} PDFs, {summary['abstracts_skipped']} abstracts. "
             "Use --force to redownload them."
         )
+    return summary
 
 
 def _download_paper(

@@ -2,6 +2,64 @@
 
 A PaperMinerToolkit corpus is a SQLite database containing normalized paper metadata, compressed content-addressed assets, pipeline state, filter decisions, and optional topic-model predictions. Assets can include abstracts, plain text, PDFs, and raw structured article documents such as publisher XML, JATS, or TEI. Structured documents remain alongside derived plain text so later workflows can retain sections, figures, captions, tables, and source provenance. Matching DOI, source identifier, or title/year records are merged so a paper is not processed twice.
 
+## Probe and gather papers
+
+Check that a source is answering, then search and collect content in one command:
+
+```bash
+pmt probe --source arxiv
+pmt gather "Lithium solid electrolyte" papers.db \
+  --source arxiv --count 5 --format abstract --download-source arxiv
+```
+
+This small arXiv example needs no credentials or language model. `pmt probe`
+reports provider configuration and availability; see {doc}`configuration` for
+all-provider checks, JSON output, and the credit cost of probing `openalex-content`.
+
+`pmt gather QUERY [DB_PATH]` requires a query and defaults to `papers.db`. It
+searches the selected providers, merges duplicates, then downloads content only
+for papers matched in that invocation, including matching records already in the
+corpus. Unrelated papers are left for a separate `pmt download` run. Existing
+assets are skipped unless `--force` is supplied, and stored filter decisions still
+apply.
+
+Search providers and download providers are separate choices. Repeat `--source`
+to select search providers, and repeat `--download-source` to select content
+providers. Each defaults to `all`, using the providers available for that stage:
+
+```bash
+pmt gather "Lithium solid electrolyte" papers.db \
+  --source arxiv --source openalex --count 25 \
+  --format pdf --download-source arxiv --download-source openalex
+```
+
+`--count` must be positive and limits results **per search provider**, so the
+combined corpus can contain more than that many papers. `--format` accepts
+`abstract`, `text`, `pdf`, or `both`; its default is `both` (text and PDFs).
+Abstracts are also collected by default, including any already returned by the
+search, so they need no extra request. Use `--no-abstract` when gathering text or
+PDFs without abstracts. `--enrich` supplements metadata during discovery.
+`--parallel` overlaps provider searches, and `--workers N` both enables parallel
+search and caps the provider workers; these options do not parallelize downloads.
+
+For scripts, keep the JSON summary separate from progress output:
+
+```bash
+pmt gather "Lithium solid electrolyte" papers.db \
+  --source arxiv --count 5 --format abstract --download-source arxiv \
+  --json > gather.json
+```
+
+The JSON object contains `search` and `downloads`. `search` includes the search
+ID and status, resolved sources, per-provider outcomes, matching `paper_ids`, and
+counts named `result_count`, `papers_added`, `papers_updated`, and
+`abstracts_stored`. `downloads`
+contains counts for retrieved and skipped text, PDF, and abstract assets, or
+`null` when there are no matches or every search provider fails. Progress goes to
+standard error, leaving standard output parseable as JSON. A partial or failed
+search exits with code 1 after preserving successful results; a successful search
+with no matches exits with code 0.
+
 ## Search literature services
 
 Search all configured providers:
@@ -39,6 +97,13 @@ pmt search "Lithium solid electrolyte" papers.db --source arxiv --count 100
 pmt search "Lithium solid electrolyte" papers.db --source medrxiv --count 100
 pmt search "Lithium solid electrolyte" papers.db --source biorxiv --count 100
 pmt search "Lithium solid electrolyte" papers.db --source chemrxiv --count 100
+```
+
+Repeat `--source` to search a subset of providers in one recorded invocation:
+
+```bash
+pmt search "Lithium solid electrolyte" papers.db \
+  --source openalex --source arxiv --count 25
 ```
 
 PubMed exposes only the first 10000 matches for any query, whatever `--count` asks for. When a
@@ -135,7 +200,7 @@ chemrxiv.org is fronted by a bot challenge that can refuse a client outright. Pa
 try to get around it: a refusal is reported as the reason a search or download failed, and the same
 papers stay reachable through the `openalex` and `crossref` sources.
 
-`--count` is applied to each selected provider. Add `--store-abstract` to retain abstracts returned in search records immediately; otherwise abstracts can be fetched during downloading.
+`--count` must be positive and is applied to each selected provider. Add `--store-abstract` to retain abstracts returned in search records immediately; otherwise abstracts can be fetched during downloading.
 
 Every search invocation is recorded in the corpus, including the exact query, requested source and
 count, resolved providers, options, timestamps, provider failures, and the numbers of returned,

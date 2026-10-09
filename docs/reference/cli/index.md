@@ -12,6 +12,8 @@ pmt filter regex --help
 
 | Command | Purpose |
 | --- | --- |
+| `pmt probe` | Check provider configuration and availability. |
+| `pmt gather` | Search and retrieve content for matching papers in one run. |
 | `pmt search` | Find papers and add them to a corpus. |
 | `pmt enrich` | Supplement stored bibliographic metadata. |
 | `pmt download` | Retrieve abstracts, full text, and PDFs. |
