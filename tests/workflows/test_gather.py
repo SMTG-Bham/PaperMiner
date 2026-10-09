@@ -233,6 +233,11 @@ def test_download_explicit_subset_respects_filters_and_empty_selection(
         db_path, download_format='pdf', sources=['core'], force=True, paper_ids=[],
     )
     assert not any(empty.values())
+    filtered_out = download.download_papers(
+        db_path, download_format='pdf', sources=['core'], force=True,
+        paper_ids=['excluded', 'unevaluated', 'unknown'],
+    )
+    assert not any(filtered_out.values())
     assert calls == ['included']
     with corpus.connect(db_path) as conn:
         assert corpus.get_asset(conn, 'excluded', 'pdf') is None

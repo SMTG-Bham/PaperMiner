@@ -173,6 +173,15 @@ def test_invalid_model_spans_rejected(backend: SimpleNamespace, start: int, end:
         extractor.extract('Fe')
 
 
+def test_prediction_count_must_match_non_empty_inputs(backend: SimpleNamespace) -> None:
+    """Refuse to attribute entities when the classifier drops or adds an input."""
+    backend.inference.return_value = [[], []]
+    extractor = entities.TransformerEntityExtractor(entities.EntityExtractionConfig('test/ner'))
+    with pytest.raises(ValueError, match='unexpected number of input results'):
+        extractor.extract(['', 'Fe'])
+    backend.inference.assert_called_once_with(['Fe'], batch_size=8, num_workers=0)
+
+
 def test_optional_dependency_error_is_actionable(monkeypatch: pytest.MonkeyPatch) -> None:
     """Explain how to install local inference support when PyTorch is absent."""
     import sys

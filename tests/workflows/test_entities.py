@@ -240,6 +240,27 @@ def test_inference_failure_never_publishes_partial_output(
         assert not output.exists()
 
 
+def test_prediction_count_mismatch_never_publishes_output(
+    tmp_path: Path,
+    extractor: type[RecordingExtractor],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Refuse to pair entities with documents when the model drops a result."""
+    db_path = tmp_path / 'papers.db'
+    output = tmp_path / 'entities.jsonl'
+    with corpus.connect(db_path) as conn:
+        corpus.upsert_paper(conn, {'paper_id': 'a', 'title': 'Ni'})
+    monkeypatch.setattr(extractor, 'extract', lambda self, texts: [])
+
+    with pytest.raises(RuntimeError, match='different number of results'):
+        entities.extract_corpus_entities(
+            db_path, output, EntityExtractionConfig(model='ner'), text_fields=('title',),
+        )
+
+    assert not output.exists()
+    assert list(tmp_path.glob('.entities.jsonl.*.tmp')) == []
+
+
 @pytest.mark.parametrize('as_corpus', [False, True])
 @pytest.mark.parametrize('hardlink', [False, True])
 def test_input_cannot_be_replaced_even_through_a_hardlink(
