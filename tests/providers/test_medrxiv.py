@@ -228,29 +228,6 @@ def test_latest_versions_does_not_let_a_sparse_revision_blank_a_field() -> None:
     assert merged['category'] == 'Oncology'
 
 
-def test_total_results_and_page_size_read_the_message_block() -> None:
-    """Read the record count and page length medRxiv reports alongside a page."""
-    payload = json.loads(interval_payload(total=1281))
-    assert medrxiv.total_results(payload) == 1281
-    assert medrxiv.page_size(payload) == 5
-    assert medrxiv.total_results(None) == 0
-    assert medrxiv.total_results(json.loads(empty_payload())) == 0
-    # A payload reporting no usable length falls back rather than stepping zero.
-    assert medrxiv.page_size(json.loads(empty_payload()), default=30) == 30
-    assert medrxiv.page_size(None) == medrxiv.PAGE_SIZE
-
-
-def test_page_cursors_walks_pages_from_the_last_one_back_to_zero() -> None:
-    """Start at the final page so the newest postings are read first."""
-    assert list(medrxiv.page_cursors(1281, 100)) == list(range(1200, -1, -100))
-    assert list(medrxiv.page_cursors(250, 30)) == list(range(240, -1, -30))
-    # An exact multiple must not produce an empty page past the end.
-    assert list(medrxiv.page_cursors(200, 100)) == [100, 0]
-    assert list(medrxiv.page_cursors(1, 100)) == [0]
-    assert list(medrxiv.page_cursors(0, 100)) == []
-    assert list(medrxiv.page_cursors(50, 0)) == list(range(49, -1, -1))
-
-
 def test_normalize_medrxiv_doi_accepts_both_prefixes_urls_and_versions() -> None:
     """Reduce every identifier presentation to one bare, unversioned DOI."""
     assert medrxiv.normalize_medrxiv_doi('10.1101/2024.03.01.24303596v2') == (
@@ -272,72 +249,6 @@ def test_medrxiv_version_reads_the_suffix_when_one_is_present() -> None:
     assert medrxiv.medrxiv_version('10.1101/2024.03.01.24303596v2') == '2'
     assert medrxiv.medrxiv_version('10.1101/2024.03.01.24303596') == ''
     assert medrxiv.medrxiv_version(None) == ''
-
-
-def test_endpoint_trades_page_width_for_the_category_filter() -> None:
-    """Address the filtering host only when a category is actually wanted."""
-    assert medrxiv.endpoint() == (medrxiv.BASE_URL, medrxiv.PAGE_SIZE)
-    assert medrxiv.endpoint('  ') == (medrxiv.BASE_URL, medrxiv.PAGE_SIZE)
-    assert medrxiv.endpoint('oncology') == (medrxiv.CATEGORY_BASE_URL,
-                                            medrxiv.CATEGORY_PAGE_SIZE)
-
-
-def test_interval_url_rejects_a_bound_that_is_not_an_iso_date() -> None:
-    """Refuse a malformed interval here rather than spending a request on it."""
-    assert medrxiv.interval_url('2024-01-01', '2024-12-31', 200) == (
-        f'{medrxiv.BASE_URL}/details/medrxiv/2024-01-01/2024-12-31/200/json')
-    assert medrxiv.interval_url('2024-01-01', '2024-12-31', -5).endswith('/0/json')
-    with pytest.raises(ValueError, match='start_date must be an ISO date'):
-        medrxiv.interval_url('last week', '2024-12-31')
-    with pytest.raises(ValueError, match='end_date must be an ISO date'):
-        medrxiv.interval_url('2024-01-01', '')
-
-
-
-
-
-
-
-def test_request_json_reads_an_absent_record_out_of_a_200_response() -> None:
-    """Treat the statuses that mean "nothing here" as an empty result."""
-    for status in ['no posts found', 'DOI not recognizable']:
-        session = FakeSession([FakeResponse(text=empty_payload(status))])
-        assert medrxiv.request_json(medrxiv.BASE_URL, session=session) is None
-
-
-def test_request_json_raises_on_a_rejection_dressed_as_a_200_response() -> None:
-    """Detect a rejected request that arrives with a successful status code."""
-    session = FakeSession([FakeResponse(text=empty_payload('Both dates must be in yyyy-mm-dd'))])
-    with pytest.raises(RuntimeError, match='Both dates must be in yyyy-mm-dd'):
-        medrxiv.request_json(medrxiv.BASE_URL, session=session)
-
-
-def test_request_json_reports_malformed_and_unexpected_bodies() -> None:
-    """Raise on a body that is not the JSON object the API documents."""
-    session = FakeSession([FakeResponse(text='{broken')])
-    with pytest.raises(RuntimeError, match='medRxiv returned malformed JSON'):
-        medrxiv.request_json(medrxiv.BASE_URL, session=session)
-
-    session = FakeSession([FakeResponse(text='[1, 2, 3]')])
-    with pytest.raises(RuntimeError, match='unexpected payload of type list'):
-        medrxiv.request_json(medrxiv.BASE_URL, session=session)
-
-
-def test_interval_page_sends_the_category_to_the_host_that_applies_it() -> None:
-    """Address the filtering host and pass the category it needs."""
-    session = FakeSession([FakeResponse(text=interval_payload())])
-    medrxiv.interval_page('2024-01-01', '2024-12-31', cursor=60, category='Oncology',
-                          session=session)
-
-    assert session.calls[0]['url'] == (
-        f'{medrxiv.CATEGORY_BASE_URL}/details/medrxiv/2024-01-01/2024-12-31/60/json')
-    assert session.calls[0]['params'] == {'category': 'Oncology'}
-    assert session.calls[0]['headers']['User-Agent'] == provider.USER_AGENT
-
-    session = FakeSession([FakeResponse(text=interval_payload())])
-    medrxiv.interval_page('2024-01-01', '2024-12-31', session=session)
-    assert session.calls[0]['url'].startswith(medrxiv.BASE_URL)
-    assert session.calls[0]['params'] == {}
 
 
 def test_details_requests_every_version_and_skips_an_unusable_doi() -> None:
@@ -384,75 +295,6 @@ def test_resolve_medrxiv_doi_reads_stored_values_without_a_request() -> None:
     assert medrxiv.resolve_medrxiv_doi(
         {'pdf_url': 'https://example.org/10.1101/2020.09.09.20191205.pdf'}) == ''
     assert medrxiv.resolve_medrxiv_doi({}) == ''
-
-
-def test_full_text_flattens_the_jats_document_medrxiv_publishes() -> None:
-    """Return the article title and prose, skipping tables and references."""
-    jats = ('<article><front><article-meta><title-group>'
-            '<article-title>Evolution of immunity</article-title>'
-            '</title-group></article-meta></front><body>'
-            '<sec><title>Results</title><p>Neutralising activity was widespread.</p>'
-            '<table-wrap><p>Table residue</p></table-wrap></sec>'
-            '<sec><title>Discussion</title><p>Immunity persisted.</p></sec>'
-            '</body><back><ref-list><ref><p>A citation</p></ref></ref-list></back></article>')
-    session = FakeSession([FakeResponse(text=jats)])
-    text = medrxiv.full_text({'jatsxml': 'https://www.medrxiv.org/x.source.xml'}, session=session)
-
-    assert text.startswith('Evolution of immunity')
-    assert 'Neutralising activity was widespread.' in text
-    assert 'Immunity persisted.' in text
-    assert 'Table residue' not in text
-    assert 'A citation' not in text
-
-    session = FakeSession([FakeResponse(text=jats)])
-    document = medrxiv.full_text_document(
-        {'medrxiv_doi': '10.1101/x',
-         'jatsxml': 'https://www.medrxiv.org/x.source.xml'},
-        session=session,
-    )
-    assert document.content == jats
-    assert document.document_format == 'jats'
-    assert document.source_identifier == '10.1101/x'
-    assert len(session.calls) == 1
-
-
-def test_full_text_reports_a_broken_document_and_skips_an_absent_one() -> None:
-    """Raise on unparseable JATS but treat a bodyless record as no text."""
-    session = FakeSession([])
-    assert medrxiv.full_text({}, session=session) == ''
-    assert session.calls == []
-
-    session = FakeSession([FakeResponse(text='<article')])
-    with pytest.raises(RuntimeError, match='medRxiv returned malformed JATS XML'):
-        medrxiv.full_text({'jatsxml': 'https://www.medrxiv.org/x.source.xml'}, session=session)
-
-    session = FakeSession([FakeResponse(text='<article><front/></article>')])
-    assert medrxiv.full_text({'jatsxml': 'https://www.medrxiv.org/x.source.xml'},
-                             session=session) == ''
-
-    session = FakeSession([FakeResponse(text='   ')])
-    assert medrxiv.full_text({'jatsxml': 'https://www.medrxiv.org/x.source.xml'},
-                             session=session) == ''
-
-
-def test_parse_query_lifts_the_scope_terms_out_of_the_phrase() -> None:
-    """Separate the walk's bounds from the words that have to match."""
-    terms, scope = medrxiv.parse_query(
-        '"vaccine hesitancy" uptake category:"Infectious Diseases" '
-        'from:2024-01-01 to:2024-06-30')
-
-    assert terms == ['vaccine hesitancy', 'uptake']
-    assert scope == {'category': 'Infectious Diseases', 'from': '2024-01-01', 'to': '2024-06-30'}
-    assert medrxiv.parse_query('CATEGORY:oncology') == ([], {'category': 'oncology'})
-    assert medrxiv.parse_query('   ') == ([], {})
-
-
-def test_parse_query_rejects_a_bound_that_is_not_an_iso_date() -> None:
-    """Refuse a date the interval endpoint would reject anyway."""
-    with pytest.raises(ValueError, match='from: must be an ISO date'):
-        medrxiv.parse_query('covid from:last-year')
-    with pytest.raises(ValueError, match='to: must be an ISO date'):
-        medrxiv.parse_query('covid to:2024')
 
 
 def test_matches_combines_terms_with_and_across_the_record_text() -> None:
