@@ -10,7 +10,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Mapping
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import Any, NoReturn, Self
 
 import pandas as pd
@@ -1180,10 +1180,11 @@ def medrxiv_records(count: int, start: int = 0, version: str = '1',
              'sources': 'medrxiv'} for index in range(count)]
 
 
-def stub_medrxiv_walk(monkeypatch: pytest.MonkeyPatch,
-                      pages: list[list[dict[str, Any]]],
-                      total: int | None = None,
-                      step: int = 100) -> list[dict[str, Any]]:
+def stub_rxiv_walk(monkeypatch: pytest.MonkeyPatch,
+                   provider: ModuleType,
+                   pages: list[list[dict[str, Any]]],
+                   total: int | None = None,
+                   step: int = 100) -> list[dict[str, Any]]:
     """Serve prepared interval pages and record the cursors requested.
 
     Pages are indexed by cursor so a walk that revisits the first page reads
@@ -1199,12 +1200,12 @@ def stub_medrxiv_walk(monkeypatch: pytest.MonkeyPatch,
         calls.append({'start': start, 'end': end, 'cursor': cursor, 'category': category})
         return {'cursor': cursor}
 
-    monkeypatch.setattr(search.medrxiv, 'interval_page', fake_interval_page)
-    monkeypatch.setattr(search.medrxiv, 'parse_records',
+    monkeypatch.setattr(provider, 'interval_page', fake_interval_page)
+    monkeypatch.setattr(provider, 'parse_records',
                         lambda payload: by_cursor.get(payload['cursor'], []))
-    monkeypatch.setattr(search.medrxiv, 'total_results',
+    monkeypatch.setattr(provider, 'total_results',
                         lambda _: total if total is not None else step * len(pages))
-    monkeypatch.setattr(search.medrxiv, 'page_size', lambda *_, **__: step)
+    monkeypatch.setattr(provider, 'page_size', lambda *_, **__: step)
     return calls
 
 
@@ -1224,7 +1225,7 @@ def test_medrxiv_search_walks_pages_newest_first_and_stops_at_count(
 ) -> None:
     """Read the last page first and stop once the requested count matches."""
     pages = [medrxiv_records(2, start=index * 2) for index in range(4)]
-    calls = stub_medrxiv_walk(monkeypatch, pages, total=400)
+    calls = stub_rxiv_walk(monkeypatch, search.medrxiv, pages, total=400)
 
     rows = search.medrxiv_search('vaccines from:2024-01-01 to:2024-12-31', count=3)
 
@@ -1239,7 +1240,7 @@ def test_medrxiv_search_reuses_the_page_it_fetched_to_learn_the_total(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Spend one request on the first page rather than fetching it twice."""
-    calls = stub_medrxiv_walk(monkeypatch, [medrxiv_records(2)], total=2)
+    calls = stub_rxiv_walk(monkeypatch, search.medrxiv, [medrxiv_records(2)], total=2)
 
     rows = search.medrxiv_search('vaccines', count=50)
 
@@ -1253,7 +1254,7 @@ def test_medrxiv_search_collapses_versions_that_fall_on_different_pages(
     """Count a revised preprint once even when its postings are pages apart."""
     pages = [medrxiv_records(1, version='1', date='2024-01-05'),
              medrxiv_records(1, version='2', date='2024-06-05')]
-    stub_medrxiv_walk(monkeypatch, pages, total=200)
+    stub_rxiv_walk(monkeypatch, search.medrxiv, pages, total=200)
 
     rows = search.medrxiv_search('vaccines', count=5)
 
@@ -1266,7 +1267,7 @@ def test_medrxiv_search_applies_the_scope_terms_to_the_walk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Send the interval and category the query named to the API."""
-    calls = stub_medrxiv_walk(monkeypatch, [medrxiv_records(1)], total=1, step=30)
+    calls = stub_rxiv_walk(monkeypatch, search.medrxiv, [medrxiv_records(1)], total=1, step=30)
 
     search.medrxiv_search('vaccines category:"Infectious Diseases" from:2024-02-01 to:2024-02-29',
                           count=1)
@@ -1279,7 +1280,7 @@ def test_medrxiv_search_defaults_the_interval_to_the_whole_archive(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Read from the first medRxiv posting to today when the query says nothing."""
-    calls = stub_medrxiv_walk(monkeypatch, [medrxiv_records(1)], total=1)
+    calls = stub_rxiv_walk(monkeypatch, search.medrxiv, [medrxiv_records(1)], total=1)
 
     search.medrxiv_search('vaccines', count=1, today='2026-08-22')
 
@@ -1292,7 +1293,7 @@ def test_medrxiv_search_matches_terms_rather_than_returning_the_archive(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Keep only the postings that carry every term of the query."""
-    stub_medrxiv_walk(monkeypatch, [medrxiv_records(3)], total=3)
+    stub_rxiv_walk(monkeypatch, search.medrxiv, [medrxiv_records(3)], total=3)
 
     assert len(search.medrxiv_search('vaccines', count=10)) == 3
     assert search.medrxiv_search('lithium electrolyte', count=10).empty
@@ -1305,7 +1306,7 @@ def test_medrxiv_search_stops_at_the_scan_limit_and_reports_the_shortfall(
     """End a fruitless walk at the scan limit instead of reading the archive."""
     monkeypatch.setattr(search.medrxiv, 'MAX_SCAN_RECORDS', 200)
     pages = [medrxiv_records(100, start=index * 100) for index in range(10)]
-    calls = stub_medrxiv_walk(monkeypatch, pages, total=1000)
+    calls = stub_rxiv_walk(monkeypatch, search.medrxiv, pages, total=1000)
 
     rows = search.medrxiv_search('lithium', count=5)
 
@@ -1323,7 +1324,7 @@ def test_medrxiv_search_announces_the_scan_before_it_starts(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Say how much is about to be read rather than appearing to hang."""
-    stub_medrxiv_walk(monkeypatch, [medrxiv_records(1)], total=1)
+    stub_rxiv_walk(monkeypatch, search.medrxiv, [medrxiv_records(1)], total=1)
 
     search.medrxiv_search('vaccines category:oncology from:2024-01-01 to:2024-12-31', count=1)
 
@@ -1338,7 +1339,7 @@ def test_medrxiv_search_returns_no_rows_for_an_empty_or_unmatched_archive(
     """Skip the walk when the count is zero or the interval holds nothing."""
     assert search.medrxiv_search('vaccines', count=0).empty
 
-    stub_medrxiv_walk(monkeypatch, [], total=0)
+    stub_rxiv_walk(monkeypatch, search.medrxiv, [], total=0)
     assert search.medrxiv_search('vaccines', count=10).empty
 
 
@@ -1395,29 +1396,6 @@ def biorxiv_records(count: int, start: int = 0, version: str = '1',
              'sources': 'biorxiv'} for index in range(count)]
 
 
-def stub_biorxiv_walk(monkeypatch: pytest.MonkeyPatch,
-                      pages: list[list[dict[str, Any]]],
-                      total: int | None = None,
-                      step: int = 100) -> list[dict[str, Any]]:
-    """Serve prepared bioRxiv interval pages and record the cursors requested."""
-    calls: list[dict[str, Any]] = []
-    by_cursor = {index * step: page for index, page in enumerate(pages)}
-
-    def fake_interval_page(start: str, end: str, cursor: int = 0,
-                           category: str = '', **_: Any) -> object:
-        """Record the requested window and return a page marker."""
-        calls.append({'start': start, 'end': end, 'cursor': cursor, 'category': category})
-        return {'cursor': cursor}
-
-    monkeypatch.setattr(search.biorxiv, 'interval_page', fake_interval_page)
-    monkeypatch.setattr(search.biorxiv, 'parse_records',
-                        lambda payload: by_cursor.get(payload['cursor'], []))
-    monkeypatch.setattr(search.biorxiv, 'total_results',
-                        lambda _: total if total is not None else step * len(pages))
-    monkeypatch.setattr(search.biorxiv, 'page_size', lambda *_, **__: step)
-    return calls
-
-
 def test_biorxiv_rows_normalize_records_and_clean_abstracts() -> None:
     """Frame bioRxiv records on the search schema with compacted abstracts."""
     rows = search._biorxiv_rows(biorxiv_records(2))
@@ -1434,7 +1412,7 @@ def test_biorxiv_search_walks_pages_newest_first_and_stops_at_count(
 ) -> None:
     """Read the last page first and stop once the requested count matches."""
     pages = [biorxiv_records(2, start=index * 2) for index in range(4)]
-    calls = stub_biorxiv_walk(monkeypatch, pages, total=400)
+    calls = stub_rxiv_walk(monkeypatch, search.biorxiv, pages, total=400)
 
     rows = search.biorxiv_search('genomes from:2024-01-01 to:2024-12-31', count=3)
 
@@ -1451,7 +1429,7 @@ def test_biorxiv_search_collapses_versions_that_fall_on_different_pages(
     """Count a revised preprint once even when its postings are pages apart."""
     pages = [biorxiv_records(1, version='1', date='2024-01-05'),
              biorxiv_records(1, version='2', date='2024-06-05')]
-    stub_biorxiv_walk(monkeypatch, pages, total=200)
+    stub_rxiv_walk(monkeypatch, search.biorxiv, pages, total=200)
 
     rows = search.biorxiv_search('genomes', count=5)
 
@@ -1468,7 +1446,7 @@ def test_biorxiv_search_defaults_the_interval_to_the_whole_archive(
     bioRxiv opened in 2013, six years before medRxiv, so the unscoped walk it
     defaults to is the longer of the two by a wide margin.
     """
-    calls = stub_biorxiv_walk(monkeypatch, [biorxiv_records(1)], total=1)
+    calls = stub_rxiv_walk(monkeypatch, search.biorxiv, [biorxiv_records(1)], total=1)
 
     search.biorxiv_search('genomes', count=1, today='2026-08-22')
 
@@ -1481,7 +1459,7 @@ def test_biorxiv_search_applies_the_scope_terms_to_the_walk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Send the interval and category the query named to the API."""
-    calls = stub_biorxiv_walk(monkeypatch, [biorxiv_records(1)], total=1, step=30)
+    calls = stub_rxiv_walk(monkeypatch, search.biorxiv, [biorxiv_records(1)], total=1, step=30)
 
     search.biorxiv_search('genomes category:"Developmental Biology" '
                           'from:2024-02-01 to:2024-02-29', count=1)
@@ -1503,7 +1481,7 @@ def test_biorxiv_search_reads_biorxiv_rather_than_medrxiv(
         raise AssertionError('a bioRxiv search must not read the medRxiv archive')
 
     monkeypatch.setattr(search.medrxiv, 'interval_page', unreachable)
-    stub_biorxiv_walk(monkeypatch, [biorxiv_records(1)], total=1)
+    stub_rxiv_walk(monkeypatch, search.biorxiv, [biorxiv_records(1)], total=1)
 
     rows = search.biorxiv_search('genomes', count=1)
 
@@ -1517,7 +1495,7 @@ def test_biorxiv_search_stops_at_the_scan_limit_and_reports_the_shortfall(
     """End a fruitless walk at the scan limit instead of reading the archive."""
     monkeypatch.setattr(search.biorxiv, 'MAX_SCAN_RECORDS', 200)
     pages = [biorxiv_records(100, start=index * 100) for index in range(10)]
-    calls = stub_biorxiv_walk(monkeypatch, pages, total=1000)
+    calls = stub_rxiv_walk(monkeypatch, search.biorxiv, pages, total=1000)
 
     rows = search.biorxiv_search('lithium', count=5)
 
@@ -1535,7 +1513,7 @@ def test_biorxiv_search_announces_the_scan_before_it_starts(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Say how much is about to be read rather than appearing to hang."""
-    stub_biorxiv_walk(monkeypatch, [biorxiv_records(1)], total=1)
+    stub_rxiv_walk(monkeypatch, search.biorxiv, [biorxiv_records(1)], total=1)
 
     search.biorxiv_search('genomes category:genomics from:2024-01-01 to:2024-12-31', count=1)
 
@@ -1550,7 +1528,7 @@ def test_biorxiv_search_returns_no_rows_for_an_empty_or_unmatched_archive(
     """Skip the walk when the count is zero or the interval holds nothing."""
     assert search.biorxiv_search('genomes', count=0).empty
 
-    stub_biorxiv_walk(monkeypatch, [], total=0)
+    stub_rxiv_walk(monkeypatch, search.biorxiv, [], total=0)
     assert search.biorxiv_search('genomes', count=10).empty
 
 

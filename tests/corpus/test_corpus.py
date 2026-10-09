@@ -918,10 +918,22 @@ V8_PAPER_FIELDS = V7_PAPER_FIELDS + ['medrxiv_doi']
 V9_PAPER_FIELDS = V8_PAPER_FIELDS + ['biorxiv_doi']
 
 
-def test_corpus_migrates_version_five_pubmed_columns_without_losing_rows(tmp_path: Path) -> None:
-    """Add the PubMed identifier columns to an existing version-five corpus."""
-    db_path = tmp_path / 'v5.db'
-    write_legacy_corpus(db_path, V5_PAPER_FIELDS, version=5)
+@pytest.mark.parametrize('legacy_version,fields,added_identifiers', [
+    pytest.param(5, V5_PAPER_FIELDS, ('pmid', 'pmcid'), id='v5-pubmed'),
+    pytest.param(6, V6_PAPER_FIELDS, ('arxiv_id',), id='v6-arxiv'),
+    pytest.param(7, V7_PAPER_FIELDS, ('medrxiv_doi',), id='v7-medrxiv'),
+    pytest.param(8, V8_PAPER_FIELDS, ('biorxiv_doi',), id='v8-biorxiv'),
+    pytest.param(9, V9_PAPER_FIELDS, ('chemrxiv_doi',), id='v9-chemrxiv'),
+])
+def test_corpus_migrates_identifier_columns_without_losing_rows(
+    tmp_path: Path,
+    legacy_version: int,
+    fields: list[str],
+    added_identifiers: tuple[str, ...],
+) -> None:
+    """Add nullable provider identifiers to each frozen legacy schema."""
+    db_path = tmp_path / f'v{legacy_version}.db'
+    write_legacy_corpus(db_path, fields, version=legacy_version)
 
     with open_corpus(db_path) as conn:
         version = conn.execute('PRAGMA user_version').fetchone()[0]
@@ -929,79 +941,11 @@ def test_corpus_migrates_version_five_pubmed_columns_without_losing_rows(tmp_pat
         rows = corpus.paper_rows(conn)
 
     assert version == corpus.SCHEMA_VERSION == 12
-    assert {'pmid', 'pmcid'} <= columns
+    assert set(added_identifiers) <= columns
     assert len(rows) == 1
     assert rows[0]['title'] == 'Legacy paper'
-    assert rows[0]['pmid'] is None
-    assert rows[0]['pmcid'] is None
-
-
-def test_corpus_migrates_version_six_arxiv_column_without_losing_rows(tmp_path: Path) -> None:
-    """Add the arXiv identifier column to an existing version-six corpus."""
-    db_path = tmp_path / 'v6.db'
-    write_legacy_corpus(db_path, V6_PAPER_FIELDS, version=6)
-
-    with open_corpus(db_path) as conn:
-        version = conn.execute('PRAGMA user_version').fetchone()[0]
-        columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
-        rows = corpus.paper_rows(conn)
-
-    assert version == corpus.SCHEMA_VERSION == 12
-    assert 'arxiv_id' in columns
-    assert len(rows) == 1
-    assert rows[0]['title'] == 'Legacy paper'
-    assert rows[0]['arxiv_id'] is None
-
-
-def test_corpus_migrates_version_seven_medrxiv_column_without_losing_rows(tmp_path: Path) -> None:
-    """Add the medRxiv DOI column to an existing version-seven corpus."""
-    db_path = tmp_path / 'v7.db'
-    write_legacy_corpus(db_path, V7_PAPER_FIELDS, version=7)
-
-    with open_corpus(db_path) as conn:
-        version = conn.execute('PRAGMA user_version').fetchone()[0]
-        columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
-        rows = corpus.paper_rows(conn)
-
-    assert version == corpus.SCHEMA_VERSION == 12
-    assert 'medrxiv_doi' in columns
-    assert len(rows) == 1
-    assert rows[0]['title'] == 'Legacy paper'
-    assert rows[0]['medrxiv_doi'] is None
-
-
-def test_corpus_migrates_version_eight_biorxiv_column_without_losing_rows(tmp_path: Path) -> None:
-    """Add the bioRxiv DOI column to an existing version-eight corpus."""
-    db_path = tmp_path / 'v8.db'
-    write_legacy_corpus(db_path, V8_PAPER_FIELDS, version=8)
-
-    with open_corpus(db_path) as conn:
-        version = conn.execute('PRAGMA user_version').fetchone()[0]
-        columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
-        rows = corpus.paper_rows(conn)
-
-    assert version == corpus.SCHEMA_VERSION == 12
-    assert 'biorxiv_doi' in columns
-    assert len(rows) == 1
-    assert rows[0]['title'] == 'Legacy paper'
-    assert rows[0]['biorxiv_doi'] is None
-
-
-def test_corpus_migrates_version_nine_chemrxiv_column_without_losing_rows(tmp_path: Path) -> None:
-    """Add the chemRxiv DOI column to an existing version-nine corpus."""
-    db_path = tmp_path / 'v9.db'
-    write_legacy_corpus(db_path, V9_PAPER_FIELDS, version=9)
-
-    with open_corpus(db_path) as conn:
-        version = conn.execute('PRAGMA user_version').fetchone()[0]
-        columns = {row['name'] for row in conn.execute('PRAGMA table_info(papers)').fetchall()}
-        rows = corpus.paper_rows(conn)
-
-    assert version == corpus.SCHEMA_VERSION == 12
-    assert 'chemrxiv_doi' in columns
-    assert len(rows) == 1
-    assert rows[0]['title'] == 'Legacy paper'
-    assert rows[0]['chemrxiv_doi'] is None
+    for identifier in added_identifiers:
+        assert rows[0][identifier] is None
 
 
 def test_fallback_paper_id_prefers_doi_then_pmid_then_arxiv_then_core() -> None:
