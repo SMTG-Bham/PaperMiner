@@ -4,11 +4,12 @@ Run this with the server environment's Python before loading the Gaudi model.
 Locating packages without importing them also diagnoses mismatched Torch builds.
 """
 
+from __future__ import annotations
+
 import importlib.metadata as metadata
 import importlib.util
 import pathlib
 import sys
-
 
 
 def main() -> None:
