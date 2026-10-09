@@ -15,6 +15,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Self, TypedDict, Unpack
 
+from paperminertoolkit.extraction._anthropic import messages_url, request_headers
 from paperminertoolkit.extraction.compression import CompressionConfig, maybe_compress_image_messages
 from paperminertoolkit.settings import DEFAULT_INPUT_TOKEN_LIMIT, DEFAULT_MODEL, get_model_profile, load_settings
 
@@ -565,13 +566,8 @@ class AnthropicMessagesClient(BaseModelClient):
         }
         if system:
             payload['system'] = system
-        headers = {
-            'x-api-key': self.config.api_key,
-            'anthropic-version': '2023-06-01',
-            'content-type': 'application/json',
-        }
-        base_url = (self.config.base_url or 'https://api.anthropic.com').rstrip('/')
-        endpoint = f'{base_url}/messages' if base_url.endswith('/v1') else f'{base_url}/v1/messages'
+        headers = request_headers(self.config.api_key)
+        endpoint = messages_url(self.config.base_url)
         try:
             response = requests.post(endpoint, headers=headers, json=payload, timeout=120)
             response.raise_for_status()

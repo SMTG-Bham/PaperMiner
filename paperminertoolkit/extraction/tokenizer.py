@@ -17,11 +17,13 @@ from typing import Protocol, TypeAlias
 import requests
 import tiktoken
 
+from paperminertoolkit.extraction._anthropic import (
+    ANTHROPIC_VERSION as ANTHROPIC_VERSION,
+    DEFAULT_ANTHROPIC_BASE_URL as DEFAULT_ANTHROPIC_BASE_URL,
+    request_headers,
+)
 from paperminertoolkit.settings import DEFAULT_MODEL
 from paperminertoolkit.settings import DEFAULT_INPUT_TOKEN_LIMIT
-
-ANTHROPIC_VERSION = '2023-06-01'
-DEFAULT_ANTHROPIC_BASE_URL = 'https://api.anthropic.com'
 
 
 class _ModelConfigLike(Protocol):
@@ -157,11 +159,7 @@ def _anthropic_token_count(text: str, model_config: _ModelConfigSource) -> int:
         'model': model,
         'messages': [{'role': 'user', 'content': text}],
     }
-    headers = {
-        'x-api-key': api_key,
-        'anthropic-version': ANTHROPIC_VERSION,
-        'content-type': 'application/json',
-    }
+    headers = request_headers(api_key)
     response = requests.post(
         f'{base_url.rstrip("/")}/v1/messages/count_tokens',
         headers=headers,
