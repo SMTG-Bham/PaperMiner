@@ -8,10 +8,10 @@ A recipe defines what one output record represents, the extraction instructions,
 : Lithium-conducting solid electrolytes, including composition, structure, conductivity, and electrochemical properties.
 
 `polymer`
-: Polymer identity and architecture, printed line notations, thermal and mechanical properties, molecular weight, and biodegradation results.
+: Polymer identity and architecture, printed line notations, thermal and mechanical properties, molecular weight, and biodegradation results. Distinct samples and separate degradation tests produce separate records.
 
 `polymer_db`
-: A wider polymer-database schema with identifiers, composition, microstructure, solution properties, degradation curves, and OECD test metadata. Its large output schema is best suited to papers with relatively few distinct records.
+: A wider polymer-database schema with identifiers, composition, microstructure, solution properties, degradation time series, and OECD test metadata, using the same separation of samples and tests. Its larger schema leaves less completion space for additional records.
 
 `band_gap_validation`
 : One record per distinct material, sample, composition, phase, or structure. Principal results, every gap reported by the study, and cited literature gaps are kept in separate JSON lists.
@@ -24,6 +24,12 @@ pmt scrape papers.db ./my_recipe.json --mode text
 ```
 
 Store each recipe in its own final CSV. Existing output columns participate in alias matching, so unrelated recipe schemas should not share a file.
+
+Both polymer recipes copy structure identifiers only when the source prints them; they do not infer SMILES or BigSMILES from polymer names or drawings.
+
+Scalar biodegradation and mass-loss percentages describe the end of the test, paired with `Biodegradation test duration`. An unreported endpoint is `None`, even if an earlier maximum is available. `polymer_db` also preserves reported time series in its kinetics and degradation-curve fields. The example records describe one hypothetical homopolymer sample in one compost test; their values are not evidence to copy into an extraction.
+
+Biodegradability claims must be stated for the sample and conditions. Bio-based origin alone does not establish biodegradability, as explained by the [European Environment Agency](https://www.eea.europa.eu/en/analysis/publications/biodegradable-and-compostable-plastics-challenges-and-opportunities). Report the paper's measured biodegradation endpoint: [OECD 301](https://www.oecd.org/en/publications/test-no-301-ready-biodegradability_9789264070349-en.html), for example, includes methods based on dissolved organic carbon, CO2 production, and oxygen uptake. Keep these results separate from gravimetric mass loss and molecular-weight loss.
 
 ## Text and image modes
 
@@ -91,10 +97,10 @@ The corpus records `num_text_chunks` and `num_abstract_chunks`. A value of `1` m
 
 ## Reruns and temporary files
 
-Successful stages are skipped by default. Force a deliberate rescrape:
+Successful stages are skipped by default. Statuses belong to the corpus and stage, not to a recipe, so selecting another recipe does not rerun successful stages. Use `--force` when changing recipes or deliberately rescraping, and choose a fresh intermediate output path because scrape output appends to existing files:
 
 ```bash
-pmt scrape papers.db sse --mode text --force
+pmt scrape papers.db polymer_db --mode text --force --output scraped_polymer_db_rerun.csv
 ```
 
 Choose the intermediate output and remove extracted images after successful analysis when scratch space matters:
@@ -118,6 +124,25 @@ pmt store \
 ```
 
 Storage matches aliases, performs recipe-defined unit conversions, appends provenance metadata, merges the new rows with the final CSV, and records stored papers in the corpus. Review the intermediate file before omitting confirmation in unattended workflows.
+
+Unit conversion batches values by unit-bearing column. All-missing columns need no model request; large populated columns may require several. A recipe's count of unit-bearing fields is not a fixed request count.
+
+Conversion can remove conditions embedded in unit-bearing values. Keep a copy of the scraped CSV before storage if you need its original wording; successful storage consumes the input file. To store without conversion, use the Python API:
+
+```python
+from paperminertoolkit.extraction.store import store_results
+
+store_results(
+    db_path="papers.db",
+    in_filepath="scraped_polymer_db_rerun.csv",
+    out_filepath="materials_polymer_db_rerun.csv",
+    recipe="polymer_db",
+    unit_conversion=False,
+    assume_yes=True,
+)
+```
+
+With conversion disabled, column headings still carry the recipe's target-unit labels, but cell values retain their original units and wording.
 
 The general missing value is the string `None`. Recipes that define list-valued output may use an empty list where the whole list is supported but contains no items; follow each recipe's field-level prompt.
 

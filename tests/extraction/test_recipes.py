@@ -211,6 +211,35 @@ def test_sse_recipe_preserves_material_specific_matching_rules() -> None:
     assert 'neat material and another is a composite' in additional_prompts
 
 
+@pytest.mark.parametrize('recipe_name', ['polymer', 'polymer_db'])
+def test_polymer_aliases_match_unambiguously_to_their_own_columns(recipe_name: str) -> None:
+    """Keep incoming polymer aliases from silently selecting another field."""
+    recipe = recipes.load_recipe(recipe_name)
+    columns = recipes.field_columns(recipe)
+    aliases = recipes._aliases_for(recipe)
+    owners: dict[str, str] = {}
+
+    for field, field_aliases in aliases.items():
+        expected_column = next(column for column in columns if column.split(' [')[0] == field)
+        for alias in field_aliases:
+            assert alias not in owners, f'{alias!r} belongs to both {owners.get(alias)!r} and {field!r}'
+            owners[alias] = field
+            assert recipes.canonical_match(f' {alias.swapcase()} ', columns, recipe) == expected_column
+
+
+def test_polymer_tga_aliases_distinguish_onset_from_fixed_mass_loss() -> None:
+    """Prevent a 5-percent mass-loss temperature from becoming an onset value."""
+    compact = recipes.load_recipe('polymer')
+    detailed = recipes.load_recipe('polymer_db')
+    compact_columns = recipes.field_columns(compact)
+    detailed_columns = recipes.field_columns(detailed)
+
+    assert recipes.canonical_match('T5%', compact_columns, compact) is None
+    assert recipes.canonical_match('TGA onset', compact_columns, compact) == 'Decomposition temperature [C]'
+    assert recipes.canonical_match('T5%', detailed_columns, detailed) == 'Degradation temperature 5 percent [C]'
+    assert recipes.canonical_match('TGA onset', detailed_columns, detailed) == 'Degradation temperature onset [C]'
+
+
 def test_field_columns_builds_recipe_columns_and_respects_existing_columns() -> None:
     """Test output column construction for recipe fields."""
     columns = recipes.field_columns(sample_recipe())

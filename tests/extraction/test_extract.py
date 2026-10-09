@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any, NoReturn
 
@@ -10,6 +11,7 @@ import pytest
 
 from paperminertoolkit.extraction.compression import CompressionConfig
 import paperminertoolkit.extraction.extract as extract
+from paperminertoolkit.extraction.recipes import load_recipe
 
 
 def test_record_reconciliation_without_identity_fields(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -104,6 +106,61 @@ def test_non_material_recipe_controls_prompt_terminology_and_granularity() -> No
     assert 'no relevant experiments' in prompt
     assert 'Keep each temperature series together.' in prompt
     assert 'material' not in prompt.lower()
+
+
+@pytest.mark.parametrize('recipe_name', ['polymer', 'polymer_db'])
+@pytest.mark.parametrize('prompt_kind', ['text', 'image', 'reconciliation'])
+def test_polymer_prompts_preserve_sample_and_test_granularity(recipe_name: str, prompt_kind: str) -> None:
+    """Carry sample and test identity through extraction and reconciliation."""
+    recipe = load_recipe(recipe_name)
+    if prompt_kind == 'reconciliation':
+        prompt = extract.build_reconciliation_prompt(recipe)
+    else:
+        prompt = extract.build_scrape_prompt(recipe, source=prompt_kind)
+
+    assert recipe['record definition']['unit'] in prompt
+    assert 'sample and degradation test' in prompt
+    assert 'If no degradation test is reported for a sample, return one record for that sample' in prompt
+    assert 'even when they use the same medium' in prompt
+    assert 'Time points within one test belong to the same record' in prompt
+    assert 'both the sample identity and test context are compatible' in prompt
+
+    if prompt_kind == 'reconciliation':
+        identity_fields = set(recipe['record definition']['identity fields'])
+        assert {'Name', 'Synthesis method', 'Biodegradation test standard', 'Degradation medium'}.issubset(identity_fields)
+        identity_section = prompt.split('Primary identity fields:\n', 1)[1].split('\n\n', 1)[0]
+        assert all(f'"{field}"' in identity_section for field in identity_fields)
+
+
+@pytest.mark.parametrize('recipe_name', ['polymer', 'polymer_db'])
+def test_polymer_prompt_example_contains_one_homopolymer_and_one_test(recipe_name: str) -> None:
+    """Keep the combined JSON example consistent with its sample/test rules."""
+    recipe = load_recipe(recipe_name)
+    prompt = extract.build_text_extraction_prompt(recipe)
+    examples = json.loads(prompt.split('Example output shape:\n', 1)[1])
+
+    assert len(examples) == 1
+    example = examples[0]
+    assert set(example) == set(recipe['search fields'])
+    assert example['Monomers'] == 'L-lactide'
+    composition_field = 'Copolymer type and composition' if recipe_name == 'polymer' else 'Microstructure'
+    assert example[composition_field].lower() == 'homopolymer'
+    assert 'glycolide' not in json.dumps(example).lower()
+    assert 'compost' in example['Degradation medium'].lower()
+    assert 'compost' in example['Degrading organisms or enzymes'].lower()
+    assert 'hypothetical sample and one test' in prompt
+
+    if recipe_name == 'polymer_db':
+        unrelated_tests = [
+            'Basic accelerated degradation', 'Acidic accelerated degradation',
+            'Neutral hydrolytic degradation', 'Enzymatic degradation',
+        ]
+        assert all(example[field] == 'None' for field in unrelated_tests)
+        time_points = re.findall(r'(\d+(?:\.\d+)?)% at (\d+(?:\.\d+)?) d', example['Mineralisation kinetics'])
+        assert time_points
+        endpoint, duration = time_points[-1]
+        assert example['Substance degradation at end of test'] == f'{endpoint}%'
+        assert example['Biodegradation test duration'] == f'{duration} days'
 
 
 def test_query_model_uses_text_profile_and_requested_output_limit(monkeypatch: pytest.MonkeyPatch) -> None:

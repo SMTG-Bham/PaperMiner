@@ -99,15 +99,15 @@ PMT_MODE="${PMT_MODE:-text}"
 # work. It is for testing a pipeline (PMT_COUNT=1), not for pacing a long run.
 PMT_COUNT="${PMT_COUNT:-}"
 
-# polymer: 36 fields, including the 8 biodegradation ones (test standard,
-#   medium, extent, duration, mechanism, organisms, certification). ~450 output
-#   tokens per record, so a sample series fits inside the 10000-token response
-#   ceiling. It stays the default whatever the model: the ceiling belongs to the
-#   pipeline, not to the model serving it.
-# polymer_db: 86 fields, adding the full OECD 301/310 setup and the in vitro
-#   acid/base/hydrolytic/enzymatic degradation curves. ~1100 tokens per record,
-#   so a paper truncates after roughly 9 records. Use it when you need the whole
-#   schema and the papers report few samples each.
+# polymer: 36 fields, covering identity, properties, and reported degradation
+#   tests, with 12 unit-bearing fields.
+# polymer_db: 86 fields, adding characterization, OECD test metadata, and
+#   acid/base/hydrolytic/enzymatic degradation time series, with 30 unit-bearing
+#   fields. Its larger schema leaves less of the 10000-token completion budget
+#   for additional records; the number that fits depends on the reported detail.
+# Both recipes separate distinct samples and degradation experiments. Scrape
+# statuses are corpus-wide: changing PMT_RECIPE does not rerun successful stages.
+# See README.md for an explicit CLI --force rerun with fresh output paths.
 PMT_RECIPE="${PMT_RECIPE:-polymer}"
 
 # One materials file per recipe. pmt store reuses an existing output file's
