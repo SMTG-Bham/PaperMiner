@@ -33,6 +33,7 @@ from urllib.parse import quote_plus, urlsplit
 
 import requests
 
+from paperminertoolkit._xml import local_name as _local_name
 from paperminertoolkit.providers import base as provider
 from paperminertoolkit.corpus.metadata import clean_doi
 
@@ -700,11 +701,6 @@ def full_text(payload: Mapping[str, Any] | None) -> str:
     if text is None:
         text = (payload.get('full-text-retrieval-response') or {}).get('originalText')
     return text if isinstance(text, str) else ''
-
-
-def _local_name(tag: str) -> str:
-    """Return an XML tag name without its namespace or prefix."""
-    return tag.rsplit('}', 1)[-1].rsplit(':', 1)[-1].lower()
 
 
 def xml_plain_text(content: str) -> str:
