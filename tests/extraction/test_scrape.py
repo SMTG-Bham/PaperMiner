@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 
 import paperminertoolkit.corpus.database as corpus
+from tests.corpus_helpers import read_corpus_frame as read_corpus
 import paperminertoolkit.extraction.scrape as scrape
 from paperminertoolkit.extraction.compression import CompressionConfig
 
@@ -55,12 +56,6 @@ def write_corpus(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
             pdf_path = papers_dir / f'{paper_id}.pdf'
             if pdf_path.is_file():
                 corpus.add_asset(conn, row, pdf_path, role='pdf', kind='pdf', mime_type='application/pdf')
-
-
-def read_corpus(path: Path) -> pd.DataFrame:
-    """Read paper rows from a corpus database as a DataFrame for scrape unit tests."""
-    with corpus.connect(path) as conn:
-        return pd.DataFrame(corpus.paper_rows(conn))
 
 
 class FakeTqdm:

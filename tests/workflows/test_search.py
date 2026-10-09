@@ -18,6 +18,7 @@ import pytest
 
 import paperminertoolkit.corpus.database as corpus
 import paperminertoolkit.workflows.search as search
+from tests.doubles import NullProgress
 
 
 def test_empty_pages_blank_abstracts_and_nonstandard_links_are_safe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -163,28 +164,9 @@ def test_document_search_stops_when_next_link_is_missing(monkeypatch: pytest.Mon
             }
         }
 
-    class FakeTqdm:
-        """Provide a progress-bar test double."""
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            """Initialize the test double."""
-            return None
-
-        def __enter__(self) -> Self:
-            """Enter the test-double context."""
-            return self
-
-        def __exit__(self, *_: object) -> bool:
-            """Exit the test-double context."""
-            return False
-
-        def update(self, _: int) -> None:
-            """Ignore a progress update."""
-            return None
-
     monkeypatch.setattr(search.elsevier, 'configured_api_key', lambda *_: 'elsevier-key')
     monkeypatch.setattr(search.elsevier, 'request_json', fake_request_json)
-    monkeypatch.setattr(search, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(search, 'tqdm', NullProgress)
 
     results = search._document_search('solid electrolyte', count=3, get_all=True)
 
@@ -217,28 +199,9 @@ def test_document_search_stops_non_scopus_searches_at_provider_limit(monkeypatch
             }
         }
 
-    class FakeTqdm:
-        """Provide a progress-bar test double."""
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            """Initialize the test double."""
-            return None
-
-        def __enter__(self) -> Self:
-            """Enter the test-double context."""
-            return self
-
-        def __exit__(self, *_: object) -> bool:
-            """Exit the test-double context."""
-            return False
-
-        def update(self, _: int) -> None:
-            """Ignore a progress update."""
-            return None
-
     monkeypatch.setattr(search.elsevier, 'configured_api_key', lambda *_: 'elsevier-key')
     monkeypatch.setattr(search.elsevier, 'request_json', fake_request_json)
-    monkeypatch.setattr(search, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(search, 'tqdm', NullProgress)
 
     results = search._document_search('solid electrolyte', index='article', count=6000, get_all=True)
 
@@ -327,67 +290,6 @@ def test_core_rows_normalizes_work_records() -> None:
     assert rows.loc[1, 'paper_id'] == 'doi:10.1234/no-id'
 
 
-class FakeSearchTqdm:
-    """Progress-bar test double that renders nothing."""
-
-    def __init__(self, *args: object, **kwargs: object) -> None:
-        """Accept and ignore the progress-bar arguments.
-
-        Parameters
-        ----------
-        *args : object
-            Positional arguments, unused.
-        **kwargs : object
-            Keyword arguments, unused.
-
-        Returns
-        -------
-        None
-            The double is initialized in place.
-        """
-        return None
-
-    def __enter__(self) -> 'FakeSearchTqdm':
-        """Enter the test-double context.
-
-        Returns
-        -------
-        FakeSearchTqdm
-            This double.
-        """
-        return self
-
-    def __exit__(self, *_: object) -> bool:
-        """Exit the test-double context.
-
-        Parameters
-        ----------
-        *_ : object
-            Exception details, unused.
-
-        Returns
-        -------
-        bool
-            False, so any exception propagates.
-        """
-        return False
-
-    def update(self, _: int) -> None:
-        """Ignore a progress update.
-
-        Parameters
-        ----------
-        _ : int
-            Completed units, unused.
-
-        Returns
-        -------
-        None
-            Nothing is recorded.
-        """
-        return None
-
-
 def test_core_search_paginates_and_stops_at_total_hits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -422,7 +324,7 @@ def test_core_search_paginates_and_stops_at_total_hits(
 
     monkeypatch.setattr(search.core, 'search_page', fake_search_page)
     monkeypatch.setattr(search.core, 'configured_api_key', lambda: None)
-    monkeypatch.setattr(search, 'tqdm', FakeSearchTqdm)
+    monkeypatch.setattr(search, 'tqdm', NullProgress)
 
     rows = search.core_search('solid electrolyte', count=101)
 
@@ -439,7 +341,7 @@ def test_core_search_stops_when_no_results(monkeypatch: pytest.MonkeyPatch) -> N
     """Stop at an empty page rather than walking past the end of the results."""
     monkeypatch.setattr(search.core, 'search_page', lambda *_, **__: {'results': []})
     monkeypatch.setattr(search.core, 'configured_api_key', lambda: None)
-    monkeypatch.setattr(search, 'tqdm', FakeSearchTqdm)
+    monkeypatch.setattr(search, 'tqdm', NullProgress)
 
     assert search.core_search('nothing matches', count=50).empty
 
@@ -450,32 +352,13 @@ def test_core_search_stops_when_page_is_short(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(search.core, 'search_page',
                         lambda *_, **__: pages.pop(0) if pages else {})
     monkeypatch.setattr(search.core, 'configured_api_key', lambda: None)
-    monkeypatch.setattr(search, 'tqdm', FakeSearchTqdm)
+    monkeypatch.setattr(search, 'tqdm', NullProgress)
 
     assert len(search.core_search('solid electrolyte', count=100)) == 3
 
 
 def test_openalex_search_paginates_with_cursor_and_stops_at_count(monkeypatch: pytest.MonkeyPatch) -> None:
     """OpenAlex search paginates with cursor and stops at count."""
-    class FakeTqdm:
-        """Provide a progress-bar test double."""
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            """Initialize the test double."""
-            return None
-
-        def __enter__(self) -> Self:
-            """Enter the test-double context."""
-            return self
-
-        def __exit__(self, *_: object) -> bool:
-            """Exit the test-double context."""
-            return False
-
-        def update(self, _: int) -> None:
-            """Ignore a progress update."""
-            return None
-
     calls = []
 
     first_page = [{'id': f'https://openalex.org/W{index}', 'title': f'paper {index}'} for index in range(200)]
@@ -495,7 +378,7 @@ def test_openalex_search_paginates_with_cursor_and_stops_at_count(monkeypatch: p
 
     monkeypatch.setattr(search.openalex, 'request_json', fake_request_json)
     monkeypatch.setattr(search.openalex, 'configured_api_key', lambda: 'oa-key')
-    monkeypatch.setattr(search, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(search, 'tqdm', NullProgress)
 
     rows = search.openalex_search('solid electrolyte', count=201)
 
@@ -514,25 +397,6 @@ def test_openalex_search_paginates_with_cursor_and_stops_at_count(monkeypatch: p
 
 def test_openalex_search_stops_without_next_cursor_and_omits_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """OpenAlex search stops without next cursor and omits API key."""
-    class FakeTqdm:
-        """Provide a progress-bar test double."""
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            """Initialize the test double."""
-            return None
-
-        def __enter__(self) -> Self:
-            """Enter the test-double context."""
-            return self
-
-        def __exit__(self, *_: object) -> bool:
-            """Exit the test-double context."""
-            return False
-
-        def update(self, _: int) -> None:
-            """Ignore a progress update."""
-            return None
-
     calls = []
 
     def fake_request_json(
@@ -547,7 +411,7 @@ def test_openalex_search_stops_without_next_cursor_and_omits_api_key(monkeypatch
 
     monkeypatch.setattr(search.openalex, 'request_json', fake_request_json)
     monkeypatch.setattr(search.openalex, 'configured_api_key', lambda: None)
-    monkeypatch.setattr(search, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(search, 'tqdm', NullProgress)
 
     rows = search.openalex_search('query', count=50)
 
@@ -1057,25 +921,6 @@ def test_pubmed_rows_normalize_records_and_clean_abstracts() -> None:
 
 def test_pubmed_search_pages_efetch_and_stops_at_count(monkeypatch: pytest.MonkeyPatch) -> None:
     """Page a stored result set and stop once the requested count is reached."""
-    class FakeTqdm:
-        """Provide a progress-bar test double."""
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            """Initialize the test double."""
-            return None
-
-        def __enter__(self) -> Self:
-            """Enter the test-double context."""
-            return self
-
-        def __exit__(self, *_: object) -> bool:
-            """Exit the test-double context."""
-            return False
-
-        def update(self, _: int) -> None:
-            """Ignore a progress update."""
-            return None
-
     pages = []
 
     def fake_esearch_history(query: str, **kwargs: Any) -> tuple[str, str, int]:
@@ -1098,7 +943,7 @@ def test_pubmed_search_pages_efetch_and_stops_at_count(monkeypatch: pytest.Monke
     monkeypatch.setattr(search.pubmed, 'parse_articles', fake_parse_articles)
     monkeypatch.setattr(search.pubmed, 'configured_api_key', lambda *_, **__: None)
     monkeypatch.setattr(search.pubmed, 'configured_email', lambda *_, **__: '')
-    monkeypatch.setattr(search, 'tqdm', FakeTqdm)
+    monkeypatch.setattr(search, 'tqdm', NullProgress)
 
     rows = search.pubmed_search('lithium', count=250)
 

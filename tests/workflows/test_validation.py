@@ -15,6 +15,12 @@ import paperminertoolkit.workflows.validation as validation_workflow
 from paperminertoolkit.workflows.validation import ReviewApp
 
 
+@pytest.fixture(autouse=True)
+def isolated_review_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep review snapshots and saved-review discovery inside the test directory."""
+    monkeypatch.setattr(validation_workflow, 'REVIEW_DIR', tmp_path / 'reviews')
+
+
 def _csv(headers: list[str], rows: list[list[str]]) -> str:
     """Build a tiny CSV fixture without temporary files."""
     text = io.StringIO()

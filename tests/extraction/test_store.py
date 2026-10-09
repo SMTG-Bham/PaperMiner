@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 
 import paperminertoolkit.corpus.database as corpus
+from tests.corpus_helpers import read_corpus_frame as read_papers_corpus
 import paperminertoolkit.extraction.store as store
 
 
@@ -71,12 +72,6 @@ def write_papers_corpus(path: Path) -> None:
             },
         ]:
             corpus.upsert_paper(conn, row)
-
-
-def read_papers_corpus(path: Path) -> pd.DataFrame:
-    """Read paper rows from a test corpus."""
-    with corpus.connect(path) as conn:
-        return pd.DataFrame(corpus.paper_rows(conn))
 
 
 def test_store_results_reports_missing_scraped_materials_file(

@@ -11,13 +11,13 @@ import contextlib
 import gzip
 import hashlib
 import sqlite3
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 import paperminertoolkit.corpus.database as corpus
+from tests.corpus_helpers import open_corpus
 
 
 V4_PAPER_FIELDS = [
@@ -57,28 +57,6 @@ V1_PAPER_FIELDS = [
     field for field in V4_PAPER_FIELDS
     if field not in {'num_text_chunks', 'num_abstract_chunks'}
 ]
-
-
-@contextlib.contextmanager
-def open_corpus(db_path: Path) -> Iterator[sqlite3.Connection]:
-    """Open a corpus connection that is committed and then closed.
-
-    Parameters
-    ----------
-    db_path : pathlib.Path
-        Corpus database to open.
-
-    Yields
-    ------
-    sqlite3.Connection
-        Open corpus connection.
-    """
-    conn = corpus.connect(db_path)
-    try:
-        with conn:
-            yield conn
-    finally:
-        conn.close()
 
 
 def write_legacy_corpus(db_path: Path, fields: list[str], version: int) -> None:
