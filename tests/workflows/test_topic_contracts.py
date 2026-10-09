@@ -121,3 +121,27 @@ def test_dominant_topic_entropy_has_known_values(counts: list[int], balance: flo
     assert metrics['dominant_topic_counts'] == counts
     assert metrics['smallest_dominant_topic'] == min(counts)
     assert metrics['largest_dominant_topic'] == max(counts)
+
+
+@pytest.mark.parametrize('streaming', [0, np.bool_(False), 1, np.bool_(True)])
+def test_training_mode_coercion_preserves_immutable_model_identity(
+    tmp_path: Path, streaming: int | np.bool_,
+) -> None:
+    """Serialize mode as a Python bool as the original separate branches did."""
+    from tests.workflows.test_topics import build_topic_corpus
+
+    db_path = tmp_path / 'papers.db'
+    build_topic_corpus(db_path, papers_per_theme=3)
+    options = {
+        'num_topics': 3, 'min_df': 1, 'max_df': 1.0, 'max_iter': 1,
+        'batch_size': 3, 'evaluation_sample_size': 4, 'emit_warnings': False,
+    }
+    reference = topics.train_topic_model(
+        db_path, tmp_path / 'reference', streaming=bool(streaming), **options,
+    )
+    candidate = topics.train_topic_model(
+        db_path, tmp_path / 'candidate', streaming=streaming, **options,
+    )
+    assert candidate['config']['streaming'] is bool(streaming)
+    assert candidate['config']['model_id'] == reference['config']['model_id']
+    assert candidate['fingerprint'] == reference['fingerprint']
