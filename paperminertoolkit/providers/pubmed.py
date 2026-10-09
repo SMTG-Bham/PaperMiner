@@ -280,12 +280,10 @@ def request_json(
     """
     response = request(url, params=params, api_key=api_key, email=email,
                        session=session, timeout=timeout, attempts=attempts)
-    if response is None:
-        return None
-    try:
-        payload = response.json()
-    except ValueError as error:
-        raise RuntimeError(f'NCBI returned an undecodable JSON payload: {error}') from error
+    payload = provider.decode_payload(
+        response, label='NCBI',
+        decode_error=lambda _, error: f'NCBI returned an undecodable JSON payload: {error}',
+    )
     error_text = _error_text(payload)
     if error_text:
         raise RuntimeError(f'NCBI rejected the request: {error_text}')
@@ -333,15 +331,7 @@ def request_xml(
     """
     response = request(url, params=params, api_key=api_key, email=email,
                        session=session, timeout=timeout, attempts=attempts)
-    if response is None:
-        return None
-    text = response.text or ''
-    if not text.strip():
-        return None
-    try:
-        root = ET.fromstring(text)
-    except ET.ParseError as error:
-        raise RuntimeError(f'NCBI returned malformed XML: {error}') from error
+    root = provider.decode_xml(response, label='NCBI')
     error_text = _error_text(root)
     if error_text:
         raise RuntimeError(f'NCBI rejected the request: {error_text}')

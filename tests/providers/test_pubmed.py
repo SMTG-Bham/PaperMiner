@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+import json
 from typing import Any
 from urllib.parse import urljoin
 
@@ -396,6 +397,53 @@ def test_request_json_raises_on_an_error_member_of_a_successful_response() -> No
     session = FakeSession([FakeResponse(payload={'esearchresult': {'ERROR': 'Invalid field'}})])
     with pytest.raises(RuntimeError, match='NCBI rejected the request: Invalid field'):
         pubmed.request_json(pubmed.ESEARCH_URL, session=session)
+
+
+@pytest.mark.parametrize('payload', [None, [], ['entry'], 0, False, 'text'])
+def test_request_json_keeps_non_mapping_payloads_permissive(payload: Any) -> None:
+    """Decode valid JSON without introducing a new object-only requirement."""
+    session = FakeSession([FakeResponse(text=json.dumps(payload))])
+
+    assert pubmed.request_json(pubmed.ESEARCH_URL, session=session) == payload
+    assert len(session.calls) == 1
+
+
+@pytest.mark.parametrize('payload', [
+    {'ERROR': 'denied'}, {'error': 'denied'},
+    {'esearchresult': {'ERROR': 'denied'}}, {'esearchresult': {'error': 'denied'}},
+])
+def test_request_json_preserves_every_ncbi_error_envelope(payload: dict[str, Any]) -> None:
+    """Reject API errors independently of HTTP status or envelope spelling."""
+    session = FakeSession([FakeResponse(payload=payload)])
+
+    with pytest.raises(RuntimeError, match='NCBI rejected the request: denied'):
+        pubmed.request_json(pubmed.ESEARCH_URL, session=session)
+
+    assert len(session.calls) == 1
+
+
+@pytest.mark.parametrize('api_key', [None, 'configured-key'])
+def test_json_decoding_preserves_credentials_pacing_and_error_cause(
+    monkeypatch: pytest.MonkeyPatch,
+    api_key: str | None,
+) -> None:
+    """Keep malformed JSON outside retries without bypassing the NCBI request."""
+    waits: list[float | None] = []
+    monkeypatch.setattr(pubmed.LIMITER, 'wait', lambda interval=None: waits.append(interval))
+    session = FakeSession([FakeResponse(text='{broken')])
+
+    with pytest.raises(RuntimeError, match='NCBI returned an undecodable JSON payload:') as failure:
+        pubmed.request_json(pubmed.ESEARCH_URL, params={'db': 'pubmed'},
+                            api_key=api_key, email='person@example.org', session=session)
+
+    assert isinstance(failure.value.__cause__, ValueError)
+    assert len(session.calls) == 1
+    expected_params = {'db': 'pubmed', 'tool': 'PaperMinerToolkit',
+                       'email': 'person@example.org'}
+    if api_key:
+        expected_params['api_key'] = api_key
+    assert session.calls[0]['params'] == expected_params
+    assert waits == [pubmed.NCBI_KEYED_MIN_INTERVAL if api_key else pubmed.NCBI_MIN_INTERVAL]
 
 
 def test_request_xml_raises_on_an_error_element_and_malformed_bodies() -> None:

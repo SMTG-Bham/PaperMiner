@@ -484,6 +484,46 @@ def request(
                        f'{last_error}') from last_error
 
 
+def decode_payload(
+    response: ResponseLike | None,
+    *,
+    label: str,
+    decode_error: Callable[[ResponseLike, ValueError], str] | None = None,
+) -> Any:
+    """Decode a JSON response without changing its payload shape.
+
+    Parameters
+    ----------
+    response : ResponseLike or None
+        Successful response, or ``None`` for a missing record.
+    label : str
+        Provider name as it should read in error messages.
+    decode_error : callable or None, optional
+        Consulted with the response and the decoding error when the body is not
+        JSON, and returning a more specific message, or an empty string to fall
+        through to the generic one.
+
+    Returns
+    -------
+    Any
+        Decoded payload, or ``None`` for a missing record.
+
+    Raises
+    ------
+    RuntimeError
+        If the body is not well-formed JSON.
+    """
+    if response is None:
+        return None
+    try:
+        return response.json()
+    except ValueError as error:
+        specific = decode_error(response, error) if decode_error is not None else ''
+        if specific:
+            raise RuntimeError(specific) from error
+        raise RuntimeError(f'{label} returned malformed JSON: {error}') from error
+
+
 def request_payload(
     url: str,
     *,
@@ -503,9 +543,7 @@ def request_payload(
     limiter : RateLimiter
         Pacing window for this provider.
     decode_error : callable or None, optional
-        Consulted with the response and the decoding error when the body is not
-        JSON, and returning a more specific message, or an empty string to fall
-        through to the generic one.
+        Provider-specific decoding error message, as in :func:`decode_payload`.
     **kwargs : Any
         Further keyword arguments for :func:`request`.
 
@@ -520,15 +558,35 @@ def request_payload(
         If the request fails or the body is not well-formed JSON.
     """
     response = request(url, label=label, limiter=limiter, **kwargs)
-    if response is None:
+    return decode_payload(response, label=label, decode_error=decode_error)
+
+
+def require_mapping(payload: Any, *, label: str) -> dict[str, Any] | None:
+    """Validate a decoded provider payload expected to be a JSON object.
+
+    Parameters
+    ----------
+    payload : Any
+        Decoded payload, or ``None`` for a missing record.
+    label : str
+        Provider name as it should read in error messages.
+
+    Returns
+    -------
+    dict[str, Any] or None
+        A shallow copy of the mapping, or ``None`` for a missing record.
+
+    Raises
+    ------
+    RuntimeError
+        If a non-null payload is not a mapping.
+    """
+    if payload is None:
         return None
-    try:
-        return response.json()
-    except ValueError as error:
-        specific = decode_error(response, error) if decode_error is not None else ''
-        if specific:
-            raise RuntimeError(specific) from error
-        raise RuntimeError(f'{label} returned malformed JSON: {error}') from error
+    if not isinstance(payload, Mapping):
+        raise RuntimeError(f'{label} returned an unexpected payload of type '
+                           f'{type(payload).__name__}')
+    return dict(payload)
 
 
 def request_mapping(
@@ -563,12 +621,38 @@ def request_mapping(
         is not a JSON object.
     """
     payload = request_payload(url, label=label, limiter=limiter, **kwargs)
-    if payload is None:
+    return require_mapping(payload, label=label)
+
+
+def decode_xml(response: ResponseLike | None, *, label: str) -> ET.Element | None:
+    """Parse an XML response, treating missing or blank bodies as absent.
+
+    Parameters
+    ----------
+    response : ResponseLike or None
+        Successful response, or ``None`` for a missing record.
+    label : str
+        Provider name as it should read in error messages.
+
+    Returns
+    -------
+    xml.etree.ElementTree.Element or None
+        Parsed document root, or ``None`` for a missing or empty response.
+
+    Raises
+    ------
+    RuntimeError
+        If a non-empty body is not well-formed XML.
+    """
+    if response is None:
         return None
-    if not isinstance(payload, Mapping):
-        raise RuntimeError(f'{label} returned an unexpected payload of type '
-                           f'{type(payload).__name__}')
-    return dict(payload)
+    text = response.text or ''
+    if not text.strip():
+        return None
+    try:
+        return ET.fromstring(text)
+    except ET.ParseError as error:
+        raise RuntimeError(f'{label} returned malformed XML: {error}') from error
 
 
 def request_xml(
@@ -602,15 +686,7 @@ def request_xml(
         If the request fails or the payload is not well-formed XML.
     """
     response = request(url, label=label, limiter=limiter, **kwargs)
-    if response is None:
-        return None
-    text = response.text or ''
-    if not text.strip():
-        return None
-    try:
-        return ET.fromstring(text)
-    except ET.ParseError as error:
-        raise RuntimeError(f'{label} returned malformed XML: {error}') from error
+    return decode_xml(response, label=label)
 
 
 def chunked(values: Sequence[str], size: int) -> Iterator[list[str]]:

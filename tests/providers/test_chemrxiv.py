@@ -462,6 +462,27 @@ def test_request_json_reports_malformed_and_unexpected_bodies() -> None:
         chemrxiv.request_json(chemrxiv.search_url(), session=session)
 
 
+@pytest.mark.parametrize('body', ['null', '[]', '0', 'false', '"text"'])
+def test_request_payload_preserves_non_object_json(body: str) -> None:
+    """Keep permissive payload decoding available for the category endpoint."""
+    session = FakeSession([FakeResponse(body)])
+    assert chemrxiv.request_payload(chemrxiv.categories_url(), session=session) == json.loads(body)
+    assert len(session.calls) == 1
+
+
+@pytest.mark.parametrize(('body', 'message'), [
+    ('  <html>challenge</html>', 'HTML challenge page'),
+    ('{broken', 'malformed JSON'),
+])
+def test_request_decode_errors_keep_the_cause_and_do_not_retry(body: str, message: str) -> None:
+    """Decode each successful response once and retain the underlying failure."""
+    session = FakeSession([FakeResponse(body)])
+    with pytest.raises(RuntimeError, match=message) as caught:
+        chemrxiv.request_json(chemrxiv.search_url(), session=session)
+    assert isinstance(caught.value.__cause__, ValueError)
+    assert len(session.calls) == 1
+
+
 def test_search_page_sends_the_scope_the_caller_asked_for() -> None:
     """Forward the term, window, and filters as query parameters."""
     session = FakeSession([FakeResponse(search_payload())])

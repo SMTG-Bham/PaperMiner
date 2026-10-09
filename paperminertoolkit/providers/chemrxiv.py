@@ -329,19 +329,31 @@ def request_payload(
         If the request fails, the response is a challenge page, or the body is
         not well-formed JSON.
     """
-    response = request(url, params=params, session=session, timeout=timeout, attempts=attempts)
-    if response is None:
-        return None
-    try:
-        return response.json()
-    except ValueError as error:
+    def challenge(response: provider.ResponseLike, error: ValueError) -> str:
+        """Describe a successful HTTP response containing a bot challenge.
+
+        Parameters
+        ----------
+        response : provider.ResponseLike
+            Response whose JSON decoding failed.
+        error : ValueError
+            Decoder failure, retained by the shared decoder as the cause.
+
+        Returns
+        -------
+        str
+            Challenge explanation, or an empty string for normal JSON errors.
+        """
         if (response.text or '').lstrip()[:1] == '<':
-            raise RuntimeError(
+            return (
                 f'chemRxiv returned an HTML challenge page rather than JSON from {url}. '
                 f'chemrxiv.org is behind a bot challenge that PaperMinerToolkit does not try '
                 f'to bypass; the same papers can be reached through the openalex or '
-                f'crossref sources.') from error
-        raise RuntimeError(f'chemRxiv returned malformed JSON: {error}') from error
+                f'crossref sources.')
+        return ''
+
+    response = request(url, params=params, session=session, timeout=timeout, attempts=attempts)
+    return provider.decode_payload(response, label='chemRxiv', decode_error=challenge)
 
 
 def request_json(
@@ -379,11 +391,7 @@ def request_json(
     """
     payload = request_payload(url, params=params, session=session, timeout=timeout,
                               attempts=attempts)
-    if payload is None:
-        return None
-    if not isinstance(payload, Mapping):
-        raise RuntimeError(f'chemRxiv returned an unexpected payload of type {type(payload).__name__}')
-    return dict(payload)
+    return provider.require_mapping(payload, label='chemRxiv')
 
 
 def normalize_chemrxiv_doi(value: object) -> str:
