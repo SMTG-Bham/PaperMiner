@@ -7,7 +7,7 @@ configured source resolution, and corpus status updates.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -207,8 +207,8 @@ def test_elsevier_abstract_errors_and_invalid_asset_role(
 
 
 
-def test_json_to_text_and_elsevier_string_formatter() -> None:
-    """Read text out of a full-text payload and tidy what comes back."""
+def test_json_to_text() -> None:
+    """Read original text while rejecting structured and absent payloads."""
     assert download.elsevier.full_text({'originalText': 'paper text'}) == 'paper text'
     assert download.elsevier.full_text(
         {'full-text-retrieval-response': {'originalText': 'nested text'}}) == 'nested text'
@@ -216,9 +216,6 @@ def test_json_to_text_and_elsevier_string_formatter() -> None:
     assert download.elsevier.full_text({'originalText': {'bad': 'text'}}) == ''
     assert download.elsevier.full_text({}) == ''
     assert download.elsevier.full_text(None) == ''
-    assert download._elsevier_string_formatter('A Acknowledgements clean Acknowledgements') == ' clean '
-    assert download._elsevier_string_formatter('A References clean References') == ' clean '
-    assert download._elsevier_string_formatter('prefix amazonaws.com/key paper text') == ' paper text'
 
 
 def test_full_text_uri_and_download_text_success_and_failure(
@@ -268,6 +265,25 @@ def test_full_text_uri_and_download_text_success_and_failure(
                         lambda *_, **__: download.provider.FullTextDocument(''))
     assert download._download_text(paper, str(out_path)) is False
     assert download._download_text({'elsevier_link': ''}, str(out_path)) is False
+
+
+@pytest.mark.parametrize('downloader', [download._download_text, download._download_elsevier_text])
+def test_elsevier_text_entry_points_propagate_provider_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    downloader: Callable[[Mapping[str, Any], Path], object],
+) -> None:
+    """Both compatibility and structured entry points leave provider errors visible."""
+    def failed_document(*args: object, **kwargs: object) -> NoReturn:
+        """Simulate an Elsevier service failure before any text can be written."""
+        raise RuntimeError('service unavailable')
+
+    monkeypatch.setattr(download.elsevier, 'configured_api_key', lambda: 'key')
+    monkeypatch.setattr(download.elsevier, 'full_text_document', failed_document)
+    destination = tmp_path / 'paper.txt'
+    with pytest.raises(RuntimeError, match='service unavailable'):
+        downloader({'doi': '10.1234/example'}, destination)
+    assert not destination.exists()
 
 
 def test_download_elsevier_text_returns_native_document_and_clear_failures(

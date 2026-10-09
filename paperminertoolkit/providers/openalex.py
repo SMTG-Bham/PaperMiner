@@ -568,6 +568,27 @@ def works_batch(identifiers: Sequence[str],
     return works
 
 
+def author_names(work: Mapping[str, Any]) -> str:
+    """Join OpenAlex display names in authorship order.
+
+    Parameters
+    ----------
+    work : Mapping[str, Any]
+        OpenAlex work record. Empty authorships and absent names are skipped.
+
+    Returns
+    -------
+    str
+        Semicolon-separated names, preserving their spelling and whitespace.
+    """
+    return '; '.join(
+        name for name in (
+            ((authorship or {}).get('author') or {}).get('display_name')
+            for authorship in work.get('authorships') or []
+        ) if name
+    )
+
+
 def work_to_paper(work: Mapping[str, Any]) -> dict[str, Any]:
     """Map an OpenAlex work onto PaperMinerToolkit's paper schema.
 
@@ -592,12 +613,6 @@ def work_to_paper(work: Mapping[str, Any]) -> dict[str, Any]:
         paper_id = f'openalex:{identifier}'
     else:
         paper_id = ''
-    authors = '; '.join(
-        author for author in (
-            ((authorship or {}).get('author') or {}).get('display_name')
-            for authorship in work.get('authorships') or []
-        ) if author
-    )
     journal = ((work.get('primary_location') or {}).get('source') or {}).get('display_name')
     return {
         'paper_id': paper_id,
@@ -605,7 +620,7 @@ def work_to_paper(work: Mapping[str, Any]) -> dict[str, Any]:
         'title': work.get('title') or work.get('display_name') or '',
         'journal': journal or '',
         'publication_date': work.get('publication_date') or str(work.get('publication_year') or ''),
-        'authors': authors,
+        'authors': author_names(work),
         'sources': 'openalex',
         'pdf_url': (work.get('best_oa_location') or {}).get('pdf_url') or '',
         'metadata_status': 'retrieved',

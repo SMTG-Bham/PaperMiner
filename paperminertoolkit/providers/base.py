@@ -28,6 +28,8 @@ hook that is consulted first.
 from __future__ import annotations
 
 import hashlib
+import html
+import re
 import time
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -708,6 +710,25 @@ def chunked(values: Sequence[str], size: int) -> Iterator[list[str]]:
     step = max(int(size), 1)
     for start in range(0, len(values), step):
         yield list(values[start:start + step])
+
+
+def html_plain_text(text: str) -> str:
+    """Strip provider HTML markup and collapse whitespace in an abstract.
+
+    Parameters
+    ----------
+    text : str
+        Text after the caller's provider-value coercion. HTML entities are
+        decoded before tags are replaced with spaces; Unicode is preserved.
+
+    Returns
+    -------
+    str
+        Compact plain text with markup removed.
+    """
+    text = html.unescape(text)
+    text = re.sub(r'<[^>]+>', ' ', text)
+    return re.sub(r'\s+', ' ', text).strip()
 
 
 def clean_text(value: object) -> str:

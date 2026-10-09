@@ -13,7 +13,6 @@ serves, so text from either needs no PDF scrape.
 from __future__ import annotations
 
 import ast
-import html
 import json
 import os
 import re
@@ -45,29 +44,6 @@ DOWNLOAD_SOURCES = {*registry.names(registry.PDF), *registry.names(registry.TEXT
 TEXT_SOURCES = set(registry.names(registry.TEXT))
 _Paper: TypeAlias = dict[str, Any]
 _TextDownloadResult: TypeAlias = tuple[bool, str, provider.FullTextDocument | None]
-
-
-def _elsevier_string_formatter(text: str) -> str:
-    """Clean wrapper artifacts from Elsevier original text.
-
-    Parameters
-    ----------
-    text : str
-        Raw ``originalText`` value.
-
-    Returns
-    -------
-    str
-        Cleaned article text.
-    """
-    if text.count('Acknowledgements') == 2:
-        text = text.split('Acknowledgements')[1]
-    elif text.count('References') == 2:
-        text = text.split('References')[1]
-    if 'amazonaws.com/' in text:
-        text = text.split('amazonaws.com/')[-1]
-        text = text[text.find(' '):]
-    return text
 
 
 def _full_text_uri(paper: Mapping[str, Any]) -> str | None:
@@ -153,15 +129,7 @@ def _download_text(paper: Mapping[str, Any], filepath: str | PathLike[str]) -> b
     bool
         Whether text was retrieved and written.
     """
-    uri = _full_text_uri(paper)
-    if not uri:
-        return False
-    document = elsevier.full_text_document(uri, elsevier.configured_api_key())
-    if not document.text:
-        return False
-    with open(filepath, 'w', encoding='utf-8') as out_file:
-        out_file.write(document.text)
-    return True
+    return _download_elsevier_text(paper, filepath)[0]
 
 
 def _pdf_urls(paper: Mapping[str, Any]) -> list[str]:
@@ -1200,10 +1168,7 @@ def _clean_abstract(value: object) -> str:
         return ''
     if isinstance(value, list):
         value = ' '.join(str(part) for part in value if _has_value(part))
-    text = html.unescape(str(value))
-    text = re.sub(r'<[^>]+>', ' ', text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
+    return provider.html_plain_text(str(value))
 
 
 def _abstract_from_mapping(value: object) -> str:

@@ -679,19 +679,13 @@ def _openalex_fields(work: Mapping[str, Any]) -> _Fields:
     access = work.get('open_access') or {}
     identifiers = work.get('ids') or {}
     pages = [_text(biblio.get('first_page')), _text(biblio.get('last_page'))]
-    authors = '; '.join(
-        name for name in (
-            ((authorship or {}).get('author') or {}).get('display_name')
-            for authorship in work.get('authorships') or []
-        ) if name
-    )
     return {
         'openalex_id': openalex.work_id(work),
         'doi': clean_doi(work.get('doi')),
         'title': _text(work.get('title') or work.get('display_name')),
         'journal': _text(source.get('display_name')),
         'publication_date': _text(work.get('publication_date') or work.get('publication_year')),
-        'authors': authors,
+        'authors': openalex.author_names(work),
         'publisher': _text(source.get('host_organization_name')),
         'work_type': _text(work.get('type')),
         'volume': _text(biblio.get('volume')),

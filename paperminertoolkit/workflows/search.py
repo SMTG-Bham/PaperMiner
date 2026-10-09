@@ -8,14 +8,12 @@ that appear in multiple sources.
 from __future__ import annotations
 
 import datetime
-import html
 import sqlite3
 from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from types import ModuleType
 from typing import Any
 import pandas as pd
-import re
 from tqdm import tqdm
 
 from paperminertoolkit.providers import (arxiv, biorxiv, chemrxiv, core, elsevier, medrxiv,
@@ -31,6 +29,7 @@ from paperminertoolkit.corpus.database import (PAPER_FIELDS,
                                                normalize_paper,
                                                upsert_paper,
                                                upsert_papers)
+from paperminertoolkit.providers import base as provider
 from paperminertoolkit.providers import registry as sources
 
 SEARCH_SOURCES = {'all', *sources.names(sources.SEARCH)}
@@ -143,10 +142,7 @@ def _clean_search_abstract(value: object) -> str:
         return ''
     if isinstance(value, list):
         value = ' '.join(str(part) for part in value if part)
-    text = html.unescape(str(value))
-    text = re.sub(r'<[^>]+>', ' ', text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
+    return provider.html_plain_text(str(value))
 
 
 def _abstract_from_search_record(record: Mapping[str, Any]) -> str:
