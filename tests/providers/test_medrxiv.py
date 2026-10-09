@@ -8,7 +8,6 @@ from typing import Any
 import pytest
 
 import paperminertoolkit.providers.medrxiv as medrxiv
-from paperminertoolkit.providers import base as provider, rxiv as _rxiv
 
 from tests.doubles import FakeResponse, FakeSession
 
@@ -131,21 +130,12 @@ def test_record_to_paper_leaves_the_journal_empty_for_a_published_preprint() -> 
 
 def test_record_to_paper_reads_the_na_placeholder_as_an_absent_value() -> None:
     """Treat medRxiv's ``NA`` spelling as missing rather than as data."""
-    assert provider.clean_text('NA') == ''
-    assert provider.clean_text('n/a') == ''
-    assert provider.clean_text(None) == ''
-    assert provider.clean_text('  spaced   out  ') == 'spaced out'
     assert parsed_records()[3]['published_doi'] == ''
 
 
 def test_record_to_paper_flips_author_names_into_the_corpus_order() -> None:
     """Rewrite ``Family, G.`` as ``G. Family`` to match the other providers."""
     assert parsed_records()[0]['authors'] == 'A. K. Wheatley; J. A. Juno; S. J. Kent'
-    assert _rxiv._authors('Okonkwo, N.') == 'N. Okonkwo'
-    # A name with no comma is a collaboration rather than a person, so it stands.
-    assert _rxiv._authors('The RECOVERY Collaborative Group') == (
-        'The RECOVERY Collaborative Group')
-    assert _rxiv._authors('') == ''
 
 
 def test_record_to_paper_builds_a_versioned_pdf_location() -> None:

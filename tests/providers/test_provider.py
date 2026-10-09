@@ -412,6 +412,7 @@ def test_chunked_splits_a_sequence_and_tolerates_a_zero_size() -> None:
 def test_clean_text_collapses_whitespace_and_drops_placeholders() -> None:
     """Report a provider's absent-value placeholder as empty rather than as text."""
     assert provider.clean_text('  many   spaces \n here ') == 'many spaces here'
+    assert provider.clean_text('  spaced   out  ') == 'spaced out'
     assert provider.clean_text(None) == ''
     for placeholder in ['NA', 'n/a', 'None', 'null', '']:
         assert provider.clean_text(placeholder) == ''

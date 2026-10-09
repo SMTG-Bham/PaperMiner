@@ -8,7 +8,6 @@ from typing import Any
 import pytest
 
 import paperminertoolkit.providers.biorxiv as biorxiv
-from paperminertoolkit.providers import base as provider, rxiv as _rxiv
 import paperminertoolkit.providers.medrxiv as medrxiv
 
 from tests.doubles import FakeResponse, FakeSession
@@ -137,10 +136,6 @@ def test_record_to_paper_reads_the_na_placeholder_as_an_absent_value() -> None:
     record = biorxiv.record_to_paper(collection()[2])
 
     assert record['published_doi'] == ''
-    assert provider.clean_text('NA') == ''
-    assert provider.clean_text('n/a') == ''
-    assert provider.clean_text(None) == ''
-    assert provider.clean_text('  spaced   out  ') == 'spaced out'
 
 
 def test_record_to_paper_flips_author_names_into_the_corpus_order() -> None:
@@ -148,11 +143,6 @@ def test_record_to_paper_flips_author_names_into_the_corpus_order() -> None:
     record = biorxiv.record_to_paper(collection()[0])
 
     assert record['authors'] == 'Z. Duan; C. E. Curtis'
-    assert _rxiv._authors('Okonkwo, N.') == 'N. Okonkwo'
-    # A name with no comma is a consortium rather than a person, and survives.
-    assert _rxiv._authors('The ENCODE Project Consortium') == (
-        'The ENCODE Project Consortium')
-    assert _rxiv._authors('') == ''
 
 
 def test_record_to_paper_builds_a_versioned_pdf_location() -> None:

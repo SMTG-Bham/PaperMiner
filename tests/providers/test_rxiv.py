@@ -257,6 +257,7 @@ def test_authors_flip_into_the_corpus_name_order() -> None:
     assert _rxiv._authors('Wheatley, A. K.; Juno, J. A.') == 'A. K. Wheatley; J. A. Juno'
     # A name with no comma is a consortium rather than a person, so it stands.
     assert _rxiv._authors('The ENCODE Project Consortium') == 'The ENCODE Project Consortium'
+    assert _rxiv._authors('The RECOVERY Collaborative Group') == 'The RECOVERY Collaborative Group'
     assert _rxiv._authors('') == ''
 
 
