@@ -753,3 +753,121 @@ def test_refresh_topic_filters_rolls_back_failed_reevaluation(
         filtering.refresh_topic_filters(db_path, 'lda:test')
     with corpus.connect(db_path) as conn:
         assert conn.execute('SELECT COUNT(*) FROM paper_filter_results').fetchone()[0] == 2
+
+
+def _filter_snapshot(db_path: Path) -> dict[str, list[tuple[Any, ...]]]:
+    """Read complete filter state for transaction rollback comparisons."""
+    with corpus.connect(db_path) as conn:
+        return {
+            table: [tuple(row) for row in conn.execute(f'SELECT * FROM {table} ORDER BY rowid')]
+            for table in ('corpus_filters', 'paper_filter_results', 'paper_filter_state')
+        }
+
+
+def _filter_fixture(db_path: Path, rules_path: Path, method: str, name: str) -> None:
+    """Prepare two papers and a definition for either persistent filter method."""
+    with corpus.connect(db_path) as conn:
+        for paper_id in ('paper:alpha', 'paper:beta'):
+            corpus.upsert_paper(conn, {'paper_id': paper_id, 'title': paper_id})
+    if method == 'regex':
+        _write_rules(rules_path, name, 'alpha')
+    else:
+        _store_fake_topic_scores(db_path)
+        rules_path.write_text(json.dumps({
+            'name': name, 'model': 'test-model',
+            'include': [{'name': 'alpha', 'topic_id': 0, 'min_probability': 0.5}],
+            'exclude': [],
+        }))
+
+
+@pytest.mark.parametrize('method', ['regex', 'topic'])
+@pytest.mark.parametrize('replace', [False, True])
+def test_apply_filter_rolls_back_partial_result_insertion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    replace: bool,
+) -> None:
+    """Restore definitions, results, and combined state after a later SQL failure."""
+    db_path = tmp_path / 'papers.db'
+    rules_path = tmp_path / 'rules.json'
+    _filter_fixture(db_path, rules_path, method, 'target')
+    apply = filtering.apply_regex_filter if method == 'regex' else filtering.apply_topic_filter
+    if replace:
+        apply(db_path, rules_path)
+    before = _filter_snapshot(db_path)
+    definition = json.loads(rules_path.read_text())
+    definition['description'] = 'replacement description'
+    rules_path.write_text(json.dumps(definition))
+    with corpus.connect(db_path) as conn:
+        conn.executescript("""
+            CREATE TRIGGER reject_second_filter_result BEFORE INSERT ON paper_filter_results
+            WHEN NEW.paper_id = 'paper:beta'
+            BEGIN
+                SELECT RAISE(ABORT, 'injected insert failure');
+            END;
+        """)
+    monkeypatch.setattr(filtering, 'utc_now', lambda: 'changed timestamp')
+
+    with pytest.raises(sqlite3.IntegrityError, match='injected insert failure'):
+        apply(db_path, rules_path, replace=replace)
+
+    assert _filter_snapshot(db_path) == before
+
+
+@pytest.mark.parametrize('method', ['regex', 'topic'])
+def test_filter_replacement_preserves_identity_position_and_default_join(
+    tmp_path: Path,
+    method: str,
+) -> None:
+    """Replace a later filter without moving it or losing its existing join."""
+    db_path = tmp_path / 'papers.db'
+    rules_path = tmp_path / 'rules.json'
+    _filter_fixture(db_path, rules_path, method, 'target')
+    first = _write_rules(tmp_path / 'first.json', 'first', 'alpha')
+    filtering.apply_regex_filter(db_path, first)
+    apply = filtering.apply_regex_filter if method == 'regex' else filtering.apply_topic_filter
+    apply(db_path, rules_path, join_operator='or')
+    with corpus.connect(db_path) as conn:
+        before = filtering.active_filter_stack(conn)[1]
+
+    overview = apply(db_path, rules_path, replace=True)
+    after = overview['filters'][1]
+
+    assert overview['expression'] == '(first OR target)'
+    for field in ('filter_id', 'stack_position', 'created_at', 'join_operator'):
+        assert after[field] == before[field]
+    overridden = apply(db_path, rules_path, replace=True, join_operator='and')
+    assert overridden['expression'] == '(first AND target)'
+    assert overridden['filters'][1]['filter_id'] == before['filter_id']
+
+
+def test_refresh_topic_filters_rolls_back_all_filters_after_later_insert_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rollback the first refreshed filter too when a second filter fails."""
+    db_path = tmp_path / 'papers.db'
+    rules_path = tmp_path / 'rules.json'
+    _filter_fixture(db_path, rules_path, 'topic', 'first')
+    filtering.apply_topic_filter(db_path, rules_path)
+    definition = json.loads(rules_path.read_text())
+    definition['name'] = 'second'
+    rules_path.write_text(json.dumps(definition))
+    overview = filtering.apply_topic_filter(db_path, rules_path)
+    second_id = overview['filters'][1]['filter_id']
+    before = _filter_snapshot(db_path)
+    with corpus.connect(db_path) as conn:
+        conn.executescript(f"""
+            CREATE TRIGGER reject_second_filter_result BEFORE INSERT ON paper_filter_results
+            WHEN NEW.filter_id = {int(second_id)} AND NEW.paper_id = 'paper:beta'
+            BEGIN
+                SELECT RAISE(ABORT, 'injected refresh failure');
+            END;
+        """)
+    monkeypatch.setattr(filtering, 'utc_now', lambda: 'changed timestamp')
+
+    with pytest.raises(sqlite3.IntegrityError, match='injected refresh failure'):
+        filtering.refresh_topic_filters(db_path, 'lda:test')
+
+    assert _filter_snapshot(db_path) == before
